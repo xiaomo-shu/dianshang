@@ -42,13 +42,13 @@ class SMSCodeView(APIView):
         # 2.2 在redis中保存短信验证码内容
         redis_con = get_redis_connection('verify_codes')
         # 管道pipline
-        pipline = redis_con.pipline()
+        pipeline = redis_con.pipeline()
         # redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
         # redis_con.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
-        pipline.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
-        pipline.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
+        pipeline.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+        pipeline.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
         # 一次执行管道的所有命令
-        pipline.execute()
+        pipeline.execute()
 
         # 2.3 使用云通讯发送短信验证码
         # try:
@@ -62,6 +62,11 @@ class SMSCodeView(APIView):
         #         # 发送短信失败
         #         logger.error('发送短信失败')
         #         return Response({'message': '发送短信失败'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # 使用celery发出发送短信的任务
+        from celery_tasks.sms.tasks import send_sms_code
+        expires = constants.SMS_CODE_REDIS_EXPIRES // 60
+        send_sms_code.delay(mobile, sms_code, expires)
 
         # 3. 返回应答，发送成功
         return Response({'message': '发送短信成功'})
