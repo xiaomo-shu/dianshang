@@ -1,6 +1,7 @@
 var vm = new Vue({
 	el: '#app',
 	data: {
+		host: host,
 		error_name: false,
 		error_password: false,
 		error_check_password: false,
@@ -30,7 +31,7 @@ var vm = new Vue({
 			this.image_code_id = this.generate_uuid();
 
 			// 设置image_code_url
-			this.image_code_url = 'http://127.0.0.1:8000/image_codes/' + this.image_code_id + '/';
+			this.image_code_url = this.host + '/image_codes/' + this.image_code_id + '/';
 
         },
 		// 生成uuid
