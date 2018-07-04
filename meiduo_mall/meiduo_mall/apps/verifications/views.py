@@ -21,7 +21,7 @@ logger = logging.getLogger('django')
 
 # GET /sms_codes/(?P<mobile>1[3-9]\d{9})/?image_code_id=xxx&text=xxx
 class SMSCodeView(APIView):
-    def get(self, request, moblie):
+    def get(self, request, mobile):
         """
         发送短信验证码:
         1. 接收参数并进行参数校验(参数合法性校验，图片验证码对比)
@@ -38,12 +38,12 @@ class SMSCodeView(APIView):
 
         # 2.2 在redis中保存短信验证码内容
         redis_con = get_redis_connection('verify_codes')
-        redis_con.setex('sms_%s' % moblie, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+        redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
 
         # 2.3 使用云通讯发送短信验证码
         try:
             expires = constants.SMS_CODE_REDIS_EXPIRES // 60
-            res = CCP().send_template_sms(moblie, [sms_code, expires], constants.SMS_CODE_TEMP_ID)
+            res = CCP().send_template_sms(mobile, [sms_code, expires], constants.SMS_CODE_TEMP_ID)
         except Exception as e:
             logger.error(e)
             return Response({'message': '发送短信异常'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
