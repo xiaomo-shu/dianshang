@@ -12,8 +12,15 @@ class CheckImageCodeSerializer(serializers.Serializer):
         image_code_id = attrs['image_code_id']
         text = attrs['text']
 
-        # 根据`image_code_id`从redis中获取真实的图片验证码文本
+        # 判断60s内是否给手机发送过短信
+        mobile = self.context['view'].kwargs['mobile']
         redis_con = get_redis_connection('verify_codes')
+        send_flag = redis_con.get('send_flag_%s' % mobile)
+
+        if send_flag:
+            raise serializers.ValidationError('发送短信过于频繁')
+
+        # 根据`image_code_id`从redis中获取真实的图片验证码文本
         real_image_code = redis_con.get('img_%s' % image_code_id)
 
         # 删除图片验证码

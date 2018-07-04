@@ -28,8 +28,9 @@ class SMSCodeView(APIView):
         2. 使用云通讯发送短信验证码
         3. 返回应答，发送成功
         """
+        # self.kwargs['mobile']
         # 1. 接收参数并进行参数校验(参数合法性校验，图片验证码对比)
-        serializer = CheckImageCodeSerializer(data=request.query_params)
+        serializer = CheckImageCodeSerializer(data=request.query_params, context={'view': self})
         serializer.is_valid(raise_exception=True)
 
         # 2. 发送短信验证码
@@ -40,6 +41,7 @@ class SMSCodeView(APIView):
         # 2.2 在redis中保存短信验证码内容
         redis_con = get_redis_connection('verify_codes')
         redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+        redis_con.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
 
         # 2.3 使用云通讯发送短信验证码
         # try:
