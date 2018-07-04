@@ -35,23 +35,24 @@ class SMSCodeView(APIView):
         # 2. 发送短信验证码
         # 2.1 随机生成6位的短信验证码
         sms_code = '%06d' % random.randint(0, 999999)
+        logger.info('短信验证码为: %s' % sms_code)
 
         # 2.2 在redis中保存短信验证码内容
         redis_con = get_redis_connection('verify_codes')
         redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
 
         # 2.3 使用云通讯发送短信验证码
-        try:
-            expires = constants.SMS_CODE_REDIS_EXPIRES // 60
-            res = CCP().send_template_sms(mobile, [sms_code, expires], constants.SMS_CODE_TEMP_ID)
-        except Exception as e:
-            logger.error(e)
-            return Response({'message': '发送短信异常'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        else:
-            if res != 0:
-                # 发送短信失败
-                logger.error('发送短信失败')
-                return Response({'message': '发送短信失败'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # try:
+        #     expires = constants.SMS_CODE_REDIS_EXPIRES // 60
+        #     res = CCP().send_template_sms(mobile, [sms_code, expires], constants.SMS_CODE_TEMP_ID)
+        # except Exception as e:
+        #     logger.error(e)
+        #     return Response({'message': '发送短信异常'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        # else:
+        #     if res != 0:
+        #         # 发送短信失败
+        #         logger.error('发送短信失败')
+        #         return Response({'message': '发送短信失败'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         # 3. 返回应答，发送成功
         return Response({'message': '发送短信成功'})
@@ -68,6 +69,7 @@ class ImageCodeView(APIView):
         """
         # 1. 产生验证码图片captcha
         text, image = captcha.generate_captcha()
+        logger.info('图片验证码为: %s' % text)
 
         # 2. 在redis中保存图片验证码文本内容
         redis_con = get_redis_connection('verify_codes')

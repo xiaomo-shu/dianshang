@@ -16,6 +16,12 @@ class CheckImageCodeSerializer(serializers.Serializer):
         redis_con = get_redis_connection('verify_codes')
         real_image_code = redis_con.get('img_%s' % image_code_id)
 
+        # 删除图片验证码
+        try:
+            redis_con.delete('img_%s' % image_code_id)
+        except Exception:
+            pass
+
         if not real_image_code:
             raise serializers.ValidationError('图片验证码无效')
 
