@@ -1,5 +1,10 @@
+import random
+
+import logging
 from django.shortcuts import render
 from django.http import HttpResponse
+from rest_framework import status
+from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_redis import get_redis_connection
 
@@ -7,7 +12,11 @@ from meiduo_mall.libs.captcha.captcha import captcha
 
 from . import constants
 from .serializers import CheckImageCodeSerializer
+from .libs.yuntongxun.sms import CCP
 # Create your views here.
+
+# 获取日志器
+logger = logging.getLogger('django')
 
 
 # GET /sms_codes/(?P<mobile>1[3-9]\d{9})/?image_code_id=xxx&text=xxx
@@ -23,11 +32,29 @@ class SMSCodeView(APIView):
         serializer = CheckImageCodeSerializer(data=request.query_params)
         serializer.is_valid(raise_exception=True)
 
-        # 2. 使用云通讯发送短信验证码'
+        # 2. 发送短信验证码
+        # 2.1 随机生成6位的短信验证码
+        sms_code = '%06d' % random.randint(0, 999999)
 
+        # 2.2 在redis中保存短信验证码内容
+        redis_con = get_redis_connection('verify_codes')
+        redis_con.setex('sms_%s' % moblie, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+
+        # 2.3 使用云通讯发送短信验证码
+        try:
+            expires = constants.SMS_CODE_REDIS_EXPIRES // 60
+            res = CCP().send_template_sms(moblie, [sms_code, expires], constants.SMS_CODE_TEMP_ID)
+        except Exception as e:
+            logger.error(e)
+            return Response({'message': '发送短信异常'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        else:
+            if res != 0:
+                # 发送短信失败
+                logger.error('发送短信失败')
+                return Response({'message': '发送短信失败'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         # 3. 返回应答，发送成功
-
+        return Response({'message': '发送短信成功'})
 
 
 #  GET /image_codes/(?P<image_code_id>[\w-]+)/
