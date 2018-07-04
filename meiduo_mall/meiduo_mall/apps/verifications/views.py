@@ -6,6 +6,7 @@ from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.generics import GenericAPIView
 from django_redis import get_redis_connection
 
 from meiduo_mall.libs.captcha.captcha import captcha
@@ -40,8 +41,14 @@ class SMSCodeView(APIView):
 
         # 2.2 在redis中保存短信验证码内容
         redis_con = get_redis_connection('verify_codes')
-        redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
-        redis_con.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
+        # 管道pipline
+        pipline = redis_con.pipline()
+        # redis_con.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+        # redis_con.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
+        pipline.setex('sms_%s' % mobile, constants.SMS_CODE_REDIS_EXPIRES, sms_code)
+        pipline.setex('send_flag_%s' % mobile, constants.SEND_SMS_CODE_INTERVAL, 1)
+        # 一次执行管道的所有命令
+        pipline.execute()
 
         # 2.3 使用云通讯发送短信验证码
         # try:
