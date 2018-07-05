@@ -3,11 +3,13 @@ from django.shortcuts import render
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.generics import CreateAPIView
 from rest_framework_jwt.settings import api_settings
 
 from .utils import OAuthQQ
 from .exceptions import QQAPIError
 from .models import OAuthQQUser
+from .serializers import OAuthQQUserSerializer
 
 
 # Create your views here.
@@ -16,7 +18,25 @@ logger = logging.getLogger('django')
 
 
 # GET /oauth/qq/user/?code=xxx
-class QQAuthUserView(APIView):
+class QQAuthUserView(CreateAPIView):
+    serializer_class = OAuthQQUserSerializer
+    # def post(self, request):
+    #     """
+    #     绑定QQ用户:
+    #     """
+    #     # 1. 接收数据并将校验(短信验证是否正确，校验access_token是否有效)
+    #     serializer = OAuthQQUserSerializer(data=request.data)
+    #     serializer.is_valid(raise_exception=True)
+    #
+    #     # 2. 根据`mobile`查询是否存在用户信息
+    #     # 2.1 如果用户不存在，先创建一个新的用户，再进行绑定
+    #     # 2.2 如果用户存在，直接进行绑定
+    #     user = serializer.save()
+    #
+    #     # 3. 签发JWT token，进行返回
+    #     serializer = OAuthQQUserSerializer(user)
+    #     return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     def get(self, request):
         # 1.获取code
         code = request.query_params.get('code')
