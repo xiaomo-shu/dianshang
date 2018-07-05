@@ -7,6 +7,18 @@ from .models import User
 # Create your views here.
 
 
+# POST /users/
+class UserView(APIView):
+    def post(self, request):
+        """
+        用户注册:
+        1. 接收参数并进行参数校验(参数是否完整，密码是否一致，是否同意协议，短信验证码是否正确)
+        2. 创建新用户
+        3. 返回应答，注册成功
+        """
+        pass
+
+
 # url(r'^usernames/(?P<username>\w{5,20})/count/$', views.UsernameCountView.as_view()),
 class UsernameCountView(APIView):
     """
