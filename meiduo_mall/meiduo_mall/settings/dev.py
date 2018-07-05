@@ -229,6 +229,8 @@ REST_FRAMEWORK = {
 JWT_AUTH = {
     # 设置JWT token有效时间
     'JWT_EXPIRATION_DELTA': datetime.timedelta(days=1),
+    # 指定obtain_jwt_token返回响应数据时调用方法
+    'JWT_RESPONSE_PAYLOAD_HANDLER': 'users.utils.jwt_response_payload_handler',
 }
 
 # 指定Django中认证系统使用的User模型类
