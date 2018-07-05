@@ -39,11 +39,13 @@ class CreateUserSerializer(serializers.ModelSerializer):
         """是否同意协议"""
         if value != 'true':
             raise serializers.ValidationError('请同意协议')
+        return value
 
     def validate_mobile(self, value):
         """手机号格式是否正确"""
         if not re.match(r'^1[3-9]\d{9}$', value):
             raise serializers.ValidationError('手机号格式不正确')
+        return value
 
     def validate(self, attrs):
         # 密码是否一致
