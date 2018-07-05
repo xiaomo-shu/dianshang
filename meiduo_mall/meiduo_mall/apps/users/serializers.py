@@ -40,7 +40,6 @@ class CreateUserSerializer(serializers.ModelSerializer):
         if value != 'true':
             raise serializers.ValidationError('请同意协议')
 
-
     def validate_mobile(self, value):
         """手机号格式是否正确"""
         if not re.match(r'^1[3-9]\d{9}$', value):
@@ -67,3 +66,20 @@ class CreateUserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('短信验证码错误')
 
         return attrs
+
+    def create(self, validated_data):
+        """创建新用户"""
+        # 清除无用数据
+        del validated_data['password2']
+        del validated_data['sms_code']
+        del validated_data['allow']
+
+        # 调用父类的方法
+        user = super().create(validated_data)
+
+        # 加密用户的密码
+        password = validated_data['password']
+        user.set_password(password)
+        user.save()
+
+        return user
