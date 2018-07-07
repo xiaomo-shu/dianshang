@@ -15,6 +15,14 @@ class AreasSerializer(serializers.ModelSerializer):
         fields = ('id', 'name')
 
 
+class SubAreasSerializer(serializers.ModelSerializer):
+    subs = AreasSerializer(many=True)
+
+    class Meta:
+        model = Area
+        fields = ('id', 'name', 'subs')
+
+
 class EmailSerializer(serializers.ModelSerializer):
     class Meta:
         model = User

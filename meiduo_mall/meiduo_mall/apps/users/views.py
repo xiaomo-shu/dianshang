@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from .models import User, Area
-from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer, AreasSerializer
+from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer, AreasSerializer, SubAreasSerializer
 
 
 # Create your views here.
@@ -32,6 +32,21 @@ class AreasView(ListAPIView):
     #     # serializer = self.get_serializer(areas, many=True)
     #     # return Response(serializer.data)
     #     return self.list(request)
+
+
+# GET /areas/(?P<pk>\d+)/
+class SubAreasView(APIView):
+    """
+    根据父级地址id获取子级地区的信息:
+    """
+    def get(self, request, pk):
+        # 1. 根据`pk`获取地区的信息
+        area = Area.objects.get(pk=pk)
+
+        # sub_areas = area.subs.all()
+        # 2. 对父级地区进行序列化(包含关联数据)
+        serializer = SubAreasSerializer(area)
+        return Response(serializer.data)
 
 
 # GET /emails/verification/?token=xxx
