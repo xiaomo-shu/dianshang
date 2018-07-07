@@ -10,6 +10,8 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import User
 from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
+
+
 # Create your views here.
 
 
@@ -93,7 +95,6 @@ class UserDetailView(RetrieveAPIView):
         return self.request.user
 
 
-
 # POST /users/
 # class UserView(CreateModelMixin, GenericAPIView):
 class UserView(CreateAPIView):
@@ -127,6 +128,7 @@ class UsernameCountView(APIView):
     """
     用户名数量
     """
+
     def get(self, request, username):
         """
         获取指定用户名数量
@@ -146,6 +148,7 @@ class MobileCountView(APIView):
     """
     手机号数量
     """
+
     def get(self, request, mobile):
         """
         获取指定手机号数量
