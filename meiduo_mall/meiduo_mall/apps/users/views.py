@@ -3,8 +3,8 @@ from django.contrib.auth.backends import ModelBackend
 from rest_framework import status
 
 from rest_framework.views import APIView
-from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIView, UpdateAPIView
-from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin
+from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIView, UpdateAPIView, ListAPIView
+from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin, ListModelMixin
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
@@ -14,17 +14,24 @@ from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerial
 
 # Create your views here.
 # GET /areas/
-class AreasView(APIView):
+# class AreasView(ListModelMixin, GenericAPIView):
+class AreasView(ListAPIView):
     """
     获取所有省级地址的信息:
     """
-    def get(self, request):
-        # 1. 获取所有省级地区信息
-        areas = Area.objects.filter(parent=None)
+    serializer_class = AreasSerializer
+    queryset = Area.objects.filter(parent=None)
 
-        # 2. 将所有省级地区的信息进行序列化并返回
-        serializer = AreasSerializer(areas, many=True)
-        return Response(serializer.data)
+    # def get(self, request):
+    #     # # 1. 获取所有省级地区信息
+    #     # # areas = Area.objects.filter(parent=None)
+    #     # areas = self.get_queryset()
+    #     #
+    #     # # 2. 将所有省级地区的信息进行序列化并返回
+    #     # # serializer = AreasSerializer(areas, many=True)
+    #     # serializer = self.get_serializer(areas, many=True)
+    #     # return Response(serializer.data)
+    #     return self.list(request)
 
 
 # GET /emails/verification/?token=xxx
