@@ -8,11 +8,23 @@ from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateMo
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .models import User
-from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
+from .models import User, Area
+from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer, AreasSerializer
 
 
 # Create your views here.
+# GET /areas/
+class AreasView(APIView):
+    """
+    获取所有省级地址的信息:
+    """
+    def get(self, request):
+        # 1. 获取所有省级地区信息
+        areas = Area.objects.filter(parent=None)
+
+        # 2. 将所有省级地区的信息进行序列化并返回
+        serializer = AreasSerializer(areas, many=True)
+        return Response(serializer.data)
 
 
 # GET /emails/verification/?token=xxx
