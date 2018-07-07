@@ -3,6 +3,7 @@ import re
 from django_redis import get_redis_connection
 from rest_framework import serializers
 from rest_framework_jwt.settings import api_settings
+from itsdangerous import TimedJSONWebSignatureSerializer as TJWSSerializer
 
 from .models import User
 # from users.models import User
@@ -20,6 +21,11 @@ class EmailSerializer(serializers.ModelSerializer):
         instance.save()
 
         # 3. 给用户的`email`发送验证邮件
+        # 生成一个激活链接: http://www.meiduo.site:8080/success_verify_email.html?token=<token>
+        verify_url = instance.generate_verify_email_url()
+
+        # 发送邮件(邮件正文包含激活链接)
+
 
         return instance
 
