@@ -3,8 +3,8 @@ from django.contrib.auth.backends import ModelBackend
 from rest_framework import status
 
 from rest_framework.views import APIView
-from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIView
-from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin
+from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIView, UpdateAPIView
+from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
@@ -14,25 +14,34 @@ from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerial
 
 
 # PUT /email/
-class EmailView(GenericAPIView):
+# class EmailView(UpdateModelMixin, GenericAPIView):
+class EmailView(UpdateAPIView):
     serializer_class = EmailSerializer
+    permission_classes = [IsAuthenticated]
 
-    def put(self, request):
-        """
-        设置用户邮箱并发送验证邮件:
-        """
-        user = request.user
-        # 1. 获取email并进行校验
-        serializer = self.get_serializer(user, data=request.data)
-        serializer.is_valid(raise_exception=True)
+    # def put(self, request):
+    #     """
+    #     设置用户邮箱并发送验证邮件:
+    #     """
+    #     # # user = request.user
+    #     # user = self.get_object()
+    #     # # 1. 获取email并进行校验
+    #     # serializer = self.get_serializer(user, data=request.data)
+    #     # serializer.is_valid(raise_exception=True)
+    #     #
+    #     # # 2. 设置用户的邮箱email
+    #     # # 3. 给用户的`email`发送验证邮件
+    #     # serializer.save()
+    #     #
+    #     # # 4. 返回应答
+    #     # serializer = self.get_serializer(user)
+    #     # return Response(serializer.data)
+    #
+    #     return self.update(request)
 
-        # 2. 设置用户的邮箱email
-        # 3. 给用户的`email`发送验证邮件
-        serializer.save()
-
-        # 4. 返回应答
-        serializer = self.get_serializer(user)
-        return Response(serializer.data)
+    def get_object(self):
+        """返回登录的用户"""
+        return self.request.user
 
 
 # GET /user/
