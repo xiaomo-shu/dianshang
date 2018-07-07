@@ -3,8 +3,8 @@ from django.contrib.auth.backends import ModelBackend
 from rest_framework import status
 
 from rest_framework.views import APIView
-from rest_framework.generics import GenericAPIView, CreateAPIView
-from rest_framework.mixins import CreateModelMixin
+from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIView
+from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
@@ -14,19 +14,28 @@ from .serializers import CreateUserSerializer, UserDetailSerializer
 
 
 # GET /user/
-class UserDetailView(APIView):
+# class UserDetailView(GenericAPIView):
+class UserDetailView(RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = UserDetailSerializer
 
-    def get(self, request):
-        """
-        获取用户的基本信息:
-        """
-        # 1. 获取当前登录的用户user
-        user = request.user
+    # def get(self, request):
+    #     """
+    #     获取用户的基本信息:
+    #     """
+    #     # 1. 获取当前登录的用户user
+    #     # user = request.user
+    #     user = self.get_object()
+    #
+    #     # 2. 将用户数据进行序列化返回
+    #     # serializer = UserDetailSerializer(user)
+    #     serializer = self.get_serializer(user)
+    #     return Response(serializer.data)
 
-        # 2. 将用户数据进行序列化返回
-        serializer = UserDetailSerializer(user)
-        return Response(serializer.data)
+    def get_object(self):
+        """返回登录的用户"""
+        return self.request.user
+
 
 
 # POST /users/
