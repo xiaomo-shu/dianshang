@@ -8,6 +8,22 @@ from .models import User
 # from users.models import User
 
 
+class EmailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'email')
+
+    def update(self, instance, validated_data):
+        email = validated_data['email']
+        # 2. 设置用户的邮箱email
+        instance.email = email
+        instance.save()
+
+        # 3. 给用户的`email`发送验证邮件
+
+        return instance
+
+
 class UserDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = User

@@ -9,8 +9,30 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from .models import User
-from .serializers import CreateUserSerializer, UserDetailSerializer
+from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
 # Create your views here.
+
+
+# PUT /email/
+class EmailView(GenericAPIView):
+    serializer_class = EmailSerializer
+
+    def put(self, request):
+        """
+        设置用户邮箱并发送验证邮件:
+        """
+        user = request.user
+        # 1. 获取email并进行校验
+        serializer = self.get_serializer(user, data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # 2. 设置用户的邮箱email
+        # 3. 给用户的`email`发送验证邮件
+        serializer.save()
+
+        # 4. 返回应答
+        serializer = self.get_serializer(user)
+        return Response(serializer.data)
 
 
 # GET /user/
