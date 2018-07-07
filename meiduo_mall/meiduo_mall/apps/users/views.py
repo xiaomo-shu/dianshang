@@ -9,69 +9,11 @@ from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateMo
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .models import User, Area
-from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer, AreasSerializer, SubAreasSerializer
+from .models import User
+from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
 
 
 # Create your views here.
-# class AreasViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
-class AreasViewSet(ReadOnlyModelViewSet):
-    def get_serializer_class(self):
-        if self.action == 'list':
-            return AreasSerializer
-        else:
-            return SubAreasSerializer
-
-    def get_queryset(self):
-        if self.action == 'list':
-            return Area.objects.filter(parent=None)
-        else:
-            return Area.objects.all()
-
-
-# GET /areas/
-# class AreasView(ListModelMixin, GenericAPIView):
-# class AreasView(ListAPIView):
-#     """
-#     获取所有省级地址的信息:
-#     """
-#     serializer_class = AreasSerializer
-#     queryset = Area.objects.filter(parent=None)
-#
-#     # def get(self, request):
-#     #     # # 1. 获取所有省级地区信息
-#     #     # # areas = Area.objects.filter(parent=None)
-#     #     # areas = self.get_queryset()
-#     #     #
-#     #     # # 2. 将所有省级地区的信息进行序列化并返回
-#     #     # # serializer = AreasSerializer(areas, many=True)
-#     #     # serializer = self.get_serializer(areas, many=True)
-#     #     # return Response(serializer.data)
-#     #     return self.list(request)
-
-
-# GET /areas/(?P<pk>\d+)/
-# class SubAreasView(RetrieveModelMixin, GenericAPIView):
-# class SubAreasView(RetrieveAPIView):
-#     """
-#     根据父级地址id获取子级地区的信息:
-#     """
-#     serializer_class = SubAreasSerializer
-#     queryset = Area.objects.all()
-#
-#     # def get(self, request, pk):
-#     #     # # 1. 根据`pk`获取地区的信息
-#     #     # # area = Area.objects.get(pk=pk)
-#     #     # area = self.get_object()
-#     #     #
-#     #     # # sub_areas = area.subs.all()
-#     #     # # 2. 对父级地区进行序列化(包含关联数据)
-#     #     # # serializer = SubAreasSerializer(area)
-#     #     # serializer = self.get_serializer(area)
-#     #     # return Response(serializer.data)
-#     #
-#     #     return self.retrieve(request, pk)
-
 
 # GET /emails/verification/?token=xxx
 class VerifyEmailView(APIView):
@@ -83,12 +25,12 @@ class VerifyEmailView(APIView):
         token = request.query_params.get('token')
 
         if not token:
-            return Response({'message': '缺少token信息'})
+            return Response({'message': '缺少token信息'}, status=status.HTTP_400_BAD_REQUEST)
 
         user = User.check_verify_email_token(token)
 
         if user is None:
-            return Response({'message': '无效的token'})
+            return Response({'message': '无效的token'}, status=status.HTTP_400_BAD_REQUEST)
 
         # 2. 根据`user_id`和`email`获取对应的用户，设置邮箱激活状态
         user.email_active = True

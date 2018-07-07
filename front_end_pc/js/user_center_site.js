@@ -49,6 +49,7 @@ var vm = new Vue({
                     })
                     .then(response => {
                         this.cities = response.data.subs;
+                        this.districts = [];
                     })
                     .catch(error => {
                         console.log(error.response.data);

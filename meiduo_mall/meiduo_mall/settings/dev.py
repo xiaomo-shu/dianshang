@@ -46,8 +46,10 @@ INSTALLED_APPS = [
     'users.apps.UsersConfig',
     'verifications.apps.VerificationsConfig',
     'oauth.apps.OauthConfig',
+    'areas.apps.AreasConfig',
 ]
 
+# from django.contrib.auth.middleware import AuthenticationMiddleware
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',

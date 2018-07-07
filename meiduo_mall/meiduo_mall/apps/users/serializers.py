@@ -5,23 +5,10 @@ from rest_framework import serializers
 from rest_framework_jwt.settings import api_settings
 from itsdangerous import TimedJSONWebSignatureSerializer as TJWSSerializer
 
-from .models import User, Area
+from .models import User
+
+
 # from users.models import User
-
-
-class AreasSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Area
-        fields = ('id', 'name')
-
-
-class SubAreasSerializer(serializers.ModelSerializer):
-    subs = AreasSerializer(many=True)
-
-    class Meta:
-        model = Area
-        fields = ('id', 'name', 'subs')
-
 
 class EmailSerializer(serializers.ModelSerializer):
     class Meta:

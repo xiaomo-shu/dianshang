@@ -11,10 +11,4 @@ urlpatterns = [
     url(r'^user/$', views.UserDetailView.as_view()),
     url(r'^email/$', views.EmailView.as_view()),
     url(r'^emails/verification/$', views.VerifyEmailView.as_view()),
-    # url(r'^areas/$', views.AreasView.as_view()),
-    # url(r'^areas/(?P<pk>\d+)/$', views.SubAreasView.as_view()),
 ]
-
-router = DefaultRouter()
-router.register(r'areas', views.AreasViewSet, base_name='areas')
-urlpatterns += router.urls
