@@ -24,8 +24,9 @@ class EmailSerializer(serializers.ModelSerializer):
         # 生成一个激活链接: http://www.meiduo.site:8080/success_verify_email.html?token=<token>
         verify_url = instance.generate_verify_email_url()
 
-        # 发送邮件(邮件正文包含激活链接)
-
+        # 发出发送邮件任务(邮件正文包含激活链接)
+        from celery_tasks.email.tasks import send_verify_email
+        send_verify_email.delay(email, verify_url)
 
         return instance
 
