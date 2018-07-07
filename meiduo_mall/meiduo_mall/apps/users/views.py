@@ -13,6 +13,31 @@ from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerial
 # Create your views here.
 
 
+# GET /emails/verification/?token=xxx
+class VerifyEmailView(APIView):
+    def get(self, request):
+        """
+        验证用户的邮箱:
+        """
+        # 1. 获取token并进行校验(参数是否传递，是否有效)
+        token = request.query_params.get('token')
+
+        if not token:
+            return Response({'message': '缺少token信息'})
+
+        user = User.check_verify_email_token(token)
+
+        if user is None:
+            return Response({'message': '无效的token'})
+
+        # 2. 根据`user_id`和`email`获取对应的用户，设置邮箱激活状态
+        user.email_active = True
+        user.save()
+
+        # 3. 返回结果
+        return Response({'message': '邮箱验证已通过'})
+
+
 # PUT /email/
 # class EmailView(UpdateModelMixin, GenericAPIView):
 class EmailView(UpdateAPIView):
