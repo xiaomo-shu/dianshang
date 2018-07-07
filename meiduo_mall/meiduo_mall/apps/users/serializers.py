@@ -5,6 +5,13 @@ from rest_framework import serializers
 from rest_framework_jwt.settings import api_settings
 
 from .models import User
+# from users.models import User
+
+
+class UserDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'mobile', 'email', 'email_active')
 
 
 class CreateUserSerializer(serializers.ModelSerializer):
@@ -36,6 +43,12 @@ class CreateUserSerializer(serializers.ModelSerializer):
                 }
             }
         }
+
+    def validate_username(self, value):
+        """用户名不能全为数字"""
+        if re.match(r'^\d+$', value):
+            return serializers.ValidationError('用户名不能全为数字')
+        return value
 
     def validate_allow(self, value):
         """是否同意协议"""
@@ -96,4 +109,3 @@ class CreateUserSerializer(serializers.ModelSerializer):
         user.token = token
 
         return user
-

@@ -11,7 +11,7 @@ class OAuthQQUserSerializer(serializers.ModelSerializer):
     sms_code = serializers.CharField(label='短信验证码', write_only=True)
     access_token = serializers.CharField(label='操作凭证', write_only=True)
     token = serializers.CharField(read_only=True)
-    mobile = serializers.RegexField(label='手机号', regex=r'^1[3-9]\d{9}$')
+    mobile = serializers.RegexField(label='手机号', regex=r'^1[3-9]\d{9}$', write_only=True)
 
     class Meta:
         model = User
@@ -90,6 +90,5 @@ class OAuthQQUserSerializer(serializers.ModelSerializer):
         user.token = token
 
         return user
-
 
 

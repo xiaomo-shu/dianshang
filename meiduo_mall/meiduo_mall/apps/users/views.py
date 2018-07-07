@@ -6,10 +6,27 @@ from rest_framework.views import APIView
 from rest_framework.generics import GenericAPIView, CreateAPIView
 from rest_framework.mixins import CreateModelMixin
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 
 from .models import User
-from .serializers import CreateUserSerializer
+from .serializers import CreateUserSerializer, UserDetailSerializer
 # Create your views here.
+
+
+# GET /user/
+class UserDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        获取用户的基本信息:
+        """
+        # 1. 获取当前登录的用户user
+        user = request.user
+
+        # 2. 将用户数据进行序列化返回
+        serializer = UserDetailSerializer(user)
+        return Response(serializer.data)
 
 
 # POST /users/
