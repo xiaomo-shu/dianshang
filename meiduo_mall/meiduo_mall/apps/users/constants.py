@@ -1,2 +1,5 @@
 # 验证邮箱激活链接有效时间: s
 VERIFY_EMAIL_TOKEN_EXPIRES = 24 * 60 * 60
+
+# 用户创建地址的上限: 20个
+USER_ADDRESS_COUNTS_LIMIT = 20

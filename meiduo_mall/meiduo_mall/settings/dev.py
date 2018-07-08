@@ -212,6 +212,7 @@ LOGGING = {
 # logger = logging.getLogger('django')
 # logger.info('info message')
 
+# from rest_framework_jwt.authentication import  JSONWebTokenAuthentication
 # DRF框架的配置
 REST_FRAMEWORK = {
     # 异常处理
@@ -264,3 +265,11 @@ EMAIL_HOST_USER = 'smartli_it@163.com'
 EMAIL_HOST_PASSWORD = 'smart123'
 # 收件人看到的发件人
 EMAIL_FROM = '美多商城<smartli_it@163.com>'
+
+# DRF扩展
+REST_FRAMEWORK_EXTENSIONS = {
+    # 缓存时间
+    'DEFAULT_CACHE_RESPONSE_TIMEOUT': 60 * 60,
+    # 缓存存储
+    'DEFAULT_USE_CACHE': 'default',
+}
