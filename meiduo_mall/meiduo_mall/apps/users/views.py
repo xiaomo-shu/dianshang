@@ -13,10 +13,31 @@ from rest_framework.permissions import IsAuthenticated
 from .models import User
 from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
 from .serializers import UserAddressSerializer, AddressTitleSerializer
+from .serializers import AddUserBrowsingHistorySerializer
 from . import constants
 
 
 # Create your views here.
+
+# POST /browse_histories/
+# class UserBrowseHistoryView(CreateModelMixin, GenericAPIView):
+class UserBrowseHistoryView(CreateAPIView):
+    serializer_class = AddUserBrowsingHistorySerializer
+    permission_classes = [IsAuthenticated]
+
+    # def post(self, request):
+    #     # 1. 获取数据并进行校验
+    #     serializer = self.get_serializer(data=request.data)
+    #     serializer.is_valid(raise_exception=True)
+    #
+    #     # 2. 在redis中保存用户的历史浏览记录
+    #     serializer.save()
+    #
+    #     # 3. 返回应答
+    #     # request.user
+    #     return Response(serializer.data)
+
+
 class AddressViewSet(CreateModelMixin, UpdateModelMixin, GenericViewSet):
     """
     用户地址新增与修改
@@ -48,7 +69,8 @@ class AddressViewSet(CreateModelMixin, UpdateModelMixin, GenericViewSet):
         保存用户地址数据
         """
         # 检查用户地址数据数目不能超过上限
-        count = request.user.addresses.count()
+        # count = request.user.addresses.count()
+        count = request.user.addresses.filter(is_delete=False).count()
         if count >= constants.USER_ADDRESS_COUNTS_LIMIT:
             return Response({'message': '保存地址数据已达到上限'}, status=status.HTTP_400_BAD_REQUEST)
 

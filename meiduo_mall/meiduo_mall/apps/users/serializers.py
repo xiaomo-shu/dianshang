@@ -6,9 +6,45 @@ from rest_framework_jwt.settings import api_settings
 from itsdangerous import TimedJSONWebSignatureSerializer as TJWSSerializer
 
 from .models import User, Address
-
+from . import constants
+from goods.models import SKU
 
 # from users.models import User
+class AddUserBrowsingHistorySerializer(serializers.Serializer):
+    """
+    添加用户浏览历史序列化器
+    """
+    sku_id = serializers.IntegerField(label="商品SKU编号", min_value=1)
+
+    def validate_sku_id(self, value):
+        """
+        检验sku_id是否存在
+        """
+        try:
+            SKU.objects.get(id=value)
+        except SKU.DoesNotExist:
+            raise serializers.ValidationError('该商品不存在')
+        return value
+
+    def create(self, validated_data):
+        # 在redis中保存用户的历史浏览记录
+        sku_id = validated_data['sku_id']
+        redis_conn = get_redis_connection('histories')
+
+        # 拼接list key
+        user_id = self.context['request'].user.id
+        history_key = 'history_%s' % user_id
+
+        # 去重
+        pipeline = redis_conn.pipeline()
+        pipeline.lrem(history_key, 0, sku_id)
+        # 左侧加入(保持浏览顺序)
+        pipeline.lpush(history_key, sku_id)
+        # 截取前几个
+        pipeline.ltrim(history_key, 0, constants.USER_BROWSING_HISTORY_COUNTS_LIMIT - 1)
+        pipeline.execute()
+
+        return validated_data
 
 class UserAddressSerializer(serializers.ModelSerializer):
     """

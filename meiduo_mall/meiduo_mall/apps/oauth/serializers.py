@@ -1,3 +1,5 @@
+import os
+import base64
 from django_redis import get_redis_connection
 from rest_framework import serializers
 from rest_framework_jwt.settings import api_settings
@@ -75,7 +77,11 @@ class OAuthQQUserSerializer(serializers.ModelSerializer):
             # 2.1 如果用户不存在，先创建一个新的用户
             mobile = validated_data['mobile']
             password = validated_data['password']
-            user = User.objects.create_user(username=mobile, mobile=mobile, password=password)
+
+            # 随机生成一个用户名
+            username = base64.b64decode(os.urandom(8)).decode()
+            # user = User.objects.create_user(username=mobile, mobile=mobile, password=password)
+            user = User.objects.create_user(username=username, mobile=mobile, password=password)
 
         # 2.2 进行绑定
         openid = validated_data['openid']
