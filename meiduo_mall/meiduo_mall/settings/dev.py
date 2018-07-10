@@ -43,10 +43,13 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',  # 跨域请求
     # 'meiduo_mall.apps.users.apps.UsersConfig',
+    'fdfs_pic.apps.FdfsPicConfig',
     'users.apps.UsersConfig',
     'verifications.apps.VerificationsConfig',
     'oauth.apps.OauthConfig',
     'areas.apps.AreasConfig',
+    'contents.apps.ContentsConfig',
+    'goods.apps.GoodsConfig'
 ]
 
 # from django.contrib.auth.middleware import AuthenticationMiddleware
@@ -273,3 +276,11 @@ REST_FRAMEWORK_EXTENSIONS = {
     # 缓存存储
     'DEFAULT_USE_CACHE': 'default',
 }
+
+# django文件存储
+DEFAULT_FILE_STORAGE = 'meiduo_mall.utils.fastdfs.fdfs_storage.FastDFSStorage'
+
+# FastDFS
+FDFS_URL = 'http://image.meiduo.site:8888/'
+# FDFS_URL = 'http://172.16.179.139:8888/'
+FDFS_CLIENT_CONF = os.path.join(BASE_DIR, 'utils/fastdfs/client.conf')
