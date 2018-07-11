@@ -9,6 +9,7 @@ from .models import User, Address
 from . import constants
 from goods.models import SKU
 
+
 # from users.models import User
 class AddUserBrowsingHistorySerializer(serializers.Serializer):
     """
@@ -46,6 +47,7 @@ class AddUserBrowsingHistorySerializer(serializers.Serializer):
 
         return validated_data
 
+
 class UserAddressSerializer(serializers.ModelSerializer):
     """
     用户地址序列化器
@@ -81,6 +83,7 @@ class AddressTitleSerializer(serializers.ModelSerializer):
     """
     地址标题
     """
+
     class Meta:
         model = Address
         fields = ('title',)

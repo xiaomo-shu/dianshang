@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from django.contrib.auth.backends import ModelBackend
+from django_redis import get_redis_connection
 from rest_framework import status
 from rest_framework.decorators import action
 
@@ -16,10 +17,13 @@ from .serializers import UserAddressSerializer, AddressTitleSerializer
 from .serializers import AddUserBrowsingHistorySerializer
 from . import constants
 
+from goods.models import SKU
+from goods.serializers import SKUSerializer
+
 
 # Create your views here.
 
-# POST /browse_histories/
+# /browse_histories/
 # class UserBrowseHistoryView(CreateModelMixin, GenericAPIView):
 class UserBrowseHistoryView(CreateAPIView):
     serializer_class = AddUserBrowsingHistorySerializer
@@ -36,6 +40,29 @@ class UserBrowseHistoryView(CreateAPIView):
     #     # 3. 返回应答
     #     # request.user
     #     return Response(serializer.data)
+
+    def get(self, request):
+        """
+        获取用户的历史浏览的商品的信息:
+        """
+        # 1. 从redis中获取用户历史浏览的记录
+        redis_conn = get_redis_connection('histories')
+        history_key = 'history_%s' % request.user.id
+
+        # [3, 1, 2]
+        sku_ids = redis_conn.lrange(history_key, 0, constants.USER_BROWSING_HISTORY_COUNTS_LIMIT-1)
+
+        # 2. 根据商品的id获取对应商品的信息
+        # SKU.objects.filter(id__in=sku_ids)
+        skus = []
+
+        for sku_id in sku_ids:
+            sku = SKU.objects.get(id=sku_id)
+            skus.append(sku)
+
+        # 3. 返回应答，序列化商品数据并返回
+        serializer = SKUSerializer(skus, many=True)
+        return Response(serializer.data)
 
 
 class AddressViewSet(CreateModelMixin, UpdateModelMixin, GenericViewSet):
