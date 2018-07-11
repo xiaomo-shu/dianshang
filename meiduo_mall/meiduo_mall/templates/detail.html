@@ -155,7 +155,7 @@
                 {% elif option.sku_id %}
                 <a href="/goods/{{option.sku_id}}.html">{{ option.value }}</a>
                 {% else %}
-                <a href="javascript:;">{{ option.value }}</a>
+                <a href="javascript:;" style="border: 1px dotted gray;">{{ option.value }}</a>
                 {% endif %}
                 {% endfor %}
             </div>
