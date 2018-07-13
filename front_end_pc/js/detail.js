@@ -87,6 +87,7 @@ var vm = new Vue({
                         'Authorization': 'JWT ' + this.token
                     },
                     responseType: 'json',
+                    // 跨域请求的时候让浏览器携带cookie信息
                     withCredentials: true
                 })
                 .then(response => {

@@ -9,6 +9,9 @@ from meiduo_mall.utils.models import BaseModel
 
 
 # Create your models here.
+# address
+# address.province
+
 class Address(BaseModel):
     """
     用户地址

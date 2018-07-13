@@ -19,6 +19,7 @@ var vm = new Vue({
         cart: [], // 购物车数据
         hots: [], // 热销商品
     },
+    // 计算属性
     computed: {
         total_page: function(){  // 总页数
             return Math.ceil(this.count/this.page_size);

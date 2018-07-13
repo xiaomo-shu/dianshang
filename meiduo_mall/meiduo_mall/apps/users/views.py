@@ -29,6 +29,9 @@ class UserBrowseHistoryView(CreateAPIView):
     serializer_class = AddUserBrowsingHistorySerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        return None
+
     # def post(self, request):
     #     # 1. 获取数据并进行校验
     #     serializer = self.get_serializer(data=request.data)

@@ -9,8 +9,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 # Create your views here.
 
-from .serializers import CartSerializer
+from .serializers import CartSerializer, CartSKUSerializer
 from . import constants
+
+from goods.models import SKU
 
 
 # POST /cart/
@@ -19,6 +21,80 @@ class CartView(APIView):
 
     def perform_authentication(self, request):
         pass
+
+    def get(self, request):
+        """
+        获取用户的购物车记录:
+        """
+        # 判断用户是否登录
+        try:
+            user = request.user
+        except Exception:
+            user = None
+
+        if user and user.is_authenticated:
+            # 如果用户登录，从redis中获取购物车记录
+            redis_conn = get_redis_connection('cart')
+
+            # 获取用户的购物车中商品id和对应的数量count
+            cart_key = 'cart_%s' % user.id
+
+            # cart_redis_dict = {
+            #     '<sku_id>': '<count>', # bytes类型
+            #     '<sku_id>': '<count>', # bytes类型
+            #     ...
+            # }
+            cart_redis_dict = redis_conn.hgetall(cart_key)
+
+            # 获取用户的购物车勾选的商品id
+            cart_selected_key = 'cart_selected_%s' % user.id
+
+            # cart_selected_set = (sku_id, sku_id, ...)
+            cart_selected_set = redis_conn.smembers(cart_selected_key)
+
+            # 处理数据
+            # cart_dict = {
+            #     '<sku_id>': {
+            #         'count': '<count>',
+            #         'selected': '<selected>'
+            #     },
+            #     '<sku_id>': {
+            #         'count': '<count>',
+            #         'selected': '<selected>'
+            #     }
+            # }
+            cart_dict = {}
+
+            for sku_id, count in cart_redis_dict.items():
+                cart_dict[int(sku_id)]['count'] = int(count)
+                cart_dict[int(sku_id)]['selected'] = sku_id in cart_selected_set
+        else:
+            # 如果用户未登录，从cookie中获取购物车记录
+            cookie_cart = request.COOKIES.get('cart')
+
+            if cookie_cart:
+                cart_dict = pickle.loads(base64.b64decode(cookie_cart.encode()))
+            else:
+                cart_dict = {}
+
+        # 根据sku_ids获取对应商品的信息，序列化返回
+        sku_ids = cart_dict.keys()
+        skus = SKU.objects.filter(id__in=sku_ids)
+
+        for sku in skus:
+            sku.count = cart_dict[sku.id]['count']
+            sku.selected = cart_dict[sku.id]['selected']
+
+        serializer = CartSKUSerializer(skus, many=True)
+
+        return Response(serializer.data)
+
+
+
+
+
+
+
 
     def post(self, request):
         """
@@ -37,7 +113,7 @@ class CartView(APIView):
         except Exception:
             user = None
 
-        if user:
+        if user and user.is_authenticated:
             # 用户已登录
             # 2. 向redis中添加购物车记录
             redis_conn = get_redis_connection('cart')
