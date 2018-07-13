@@ -22,6 +22,70 @@ class CartView(APIView):
     def perform_authentication(self, request):
         pass
 
+    def put(self, request):
+        """
+        修改用户购物车记录:
+        """
+        # 接收参数并进行校验
+        serializer = CartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        sku_id = serializer.validated_data['sku_id']
+        count = serializer.validated_data['count']
+        selected = serializer.validated_data['selected']
+
+        # 判断用户是否登录
+        try:
+            user = request.user
+        except Exception:
+            user = None
+
+        if user and user.is_authenticated:
+            # 如果登录，修改redis中的购物车记录
+            redis_conn = get_redis_connection('cart')
+            pipeline = redis_conn.pipeline()
+
+            # 修改redis中对应商品的数量
+            cart_key = 'cart_%s' % user.id
+            pipeline.hset(cart_key, sku_id, count)
+
+            # 修改redis中对应商品的选中状态
+            cart_selected_key = 'cart_selected_%s' % user.id
+
+            if selected:
+                # 勾选
+                pipeline.sadd(cart_selected_key, sku_id)
+            else:
+                # 未勾选
+                pipeline.srem(cart_selected_key, sku_id)
+
+            pipeline.execute()
+
+            return Response(serializer.data)
+        else:
+            # 如果未登录，修改cookie中的购物车记录
+            cookie_cart = request.COOKIES.get('cart')
+
+            if cookie_cart:
+                cart_dict = pickle.loads(base64.b64decode(cookie_cart.encode()))
+            else:
+                cart_dict = {}
+
+            # 修改cookie中对应商品的数量和选中状态
+            cart_dict[sku_id] = {
+                'count': count,
+                'selected': selected
+            }
+
+            cookie_cart_data = base64.b64encode(pickle.dumps(cart_dict)).decode()
+
+            response = Response(serializer.data)
+
+            # 设置cookie
+            response.set_cookie('cart', cookie_cart_data, constants.CART_COOKIE_EXPIRES)
+
+            return response
+
     def get(self, request):
         """
         获取用户的购物车记录:
@@ -66,8 +130,14 @@ class CartView(APIView):
             cart_dict = {}
 
             for sku_id, count in cart_redis_dict.items():
-                cart_dict[int(sku_id)]['count'] = int(count)
-                cart_dict[int(sku_id)]['selected'] = sku_id in cart_selected_set
+                res_dict = {
+                    'count': int(count),
+                    'selected': sku_id in cart_selected_set
+                }
+
+                cart_dict[int(sku_id)] = res_dict
+                # cart_dict[int(sku_id)]['count'] = int(count)
+                # cart_dict[int(sku_id)]['selected'] = sku_id in cart_selected_set
         else:
             # 如果用户未登录，从cookie中获取购物车记录
             cookie_cart = request.COOKIES.get('cart')
@@ -88,13 +158,6 @@ class CartView(APIView):
         serializer = CartSKUSerializer(skus, many=True)
 
         return Response(serializer.data)
-
-
-
-
-
-
-
 
     def post(self, request):
         """
