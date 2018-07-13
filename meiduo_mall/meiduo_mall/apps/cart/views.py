@@ -68,9 +68,12 @@ class CartView(APIView):
                 return response
 
             # del cart_dict[sku_id]
-            # pop删除字典中的某个元素，设置了第二个参数之后，如果元素不存在，pop不会报错，返回None
+            # pop删除字典中的某个元素，设置了第二个参数之后
+            # 如果元素不存在，pop不会报错，返回None
+            # 如果元素存储，pop会返回被删除元素的值
             res = cart_dict.pop(sku_id, None)
 
+            # 判断是否从cart_dict中删除了某个元素，如果未删除，直接返回应答
             if res is not None:
                 cookie_cart_data = base64.b64encode(pickle.dumps(cart_dict)).decode()
                 # 设置cookie
