@@ -10,9 +10,75 @@ from rest_framework.response import Response
 # Create your views here.
 
 from .serializers import CartSerializer, CartSKUSerializer, CartDeleteSerializer
+from .serializers import CartSelectAllSerializer
 from . import constants
 
 from goods.models import SKU
+
+
+# PUT /cart/selection/
+class CartSelectAllView(APIView):
+    def perform_authentication(self, request):
+        pass
+
+    def put(self, request):
+        """
+        购物车全选和取消全选:
+        """
+        # 接收参数并进行校验
+        serializer = CartSelectAllSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        selected = serializer.validated_data['selected']
+
+        # 判断用户是否登录
+        try:
+            user = request.user
+        except Exception:
+            user = None
+
+        if user and user.is_authenticated:
+            # 如果登录，操作redis中的购物车记录
+            redis_conn = get_redis_connection('cart')
+
+            # 获取用户redis购物车记录中添加的所有商品的sku_id
+            cart_key = 'cart_%s' % user.id
+            sku_ids = redis_conn.hkeys(cart_key)
+
+            # 设置redis中购物车记录的勾选状态
+            cart_selected_key = 'cart_selected_%s' % user.id
+
+            if selected:
+                # 全选
+                redis_conn.sadd(cart_selected_key, *sku_ids)
+            else:
+                # 全不选
+                # redis_conn.srem(cart_selected_key, *sku_ids)
+                redis_conn.delete(cart_selected_key)
+
+            return Response({'message': 'OK'})
+        else:
+            # 如果用户未登录，操作cookie中的购物车记录
+            response = Response({'message': 'OK'})
+            cookie_cart = request.COOKIES.get('cart')
+
+            if cookie_cart:
+                cart_dict = pickle.loads(base64.b64decode(cookie_cart.encode()))
+            else:
+                cart_dict = {}
+
+            if not cart_dict:
+                return response
+
+            # 遍历cart_dict中所有value, 并将value中的selected设置为和客户端传递参数一致
+            for item in cart_dict.values():
+                item['selected'] = selected
+
+            cookie_cart_data = base64.b64encode(pickle.dumps(cart_dict)).decode()
+            # 设置cookie
+            response.set_cookie('cart', cookie_cart_data, constants.CART_COOKIE_EXPIRES)
+
+            return response
 
 
 # POST /cart/
