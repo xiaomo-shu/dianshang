@@ -11,6 +11,7 @@ from .exceptions import QQAPIError
 from .models import OAuthQQUser
 from .serializers import OAuthQQUserSerializer
 
+from cart.utils import merge_cart_cookie_to_redis
 
 # Create your views here.
 
@@ -22,9 +23,11 @@ class QQAuthUserView(CreateAPIView):
     serializer_class = OAuthQQUserSerializer
 
     def post(self, request, *args, **kwargs):
+        # 先调用父类的post方法
         response = super().post(request, *args, **kwargs)
 
         # 合并cookie中的购物车记录到redis中
+        merge_cart_cookie_to_redis(request, self.user, response)
 
         return response
 
@@ -84,6 +87,7 @@ class QQAuthUserView(CreateAPIView):
             })
 
             # 合并cookie中的购物车记录到redis中
+            merge_cart_cookie_to_redis(request, user, response)
 
             return response
 
