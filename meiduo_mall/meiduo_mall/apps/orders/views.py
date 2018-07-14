@@ -3,14 +3,34 @@ from decimal import Decimal
 
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.generics import GenericAPIView, CreateAPIView
 from rest_framework.permissions import IsAuthenticated
 
 from django_redis import get_redis_connection
 
 from goods.models import SKU
 from .serializers import CartSKUSerializer, OrderSettlementSerializer
-
+from .serializers import SaveOrderSerializer
 # Create your views here.
+
+
+#  POST /orders/
+class OrdersView(CreateAPIView):
+    serializer_class = SaveOrderSerializer
+
+    # def post(self, request):
+    #     """
+    #     保存订单信息:
+    #     """
+    #     # 获取参数并进行参数校验
+    #     serializer = self.get_serializer(data=request.data)
+    #     serializer.is_valid(raise_exception=True)
+    #
+    #     # 创建并保存订单信息
+    #     serializer.save()
+    #
+    #     # 返回应答
+    #     return Response(serializer.data)
 
 
 #  GET /orders/settlement/
