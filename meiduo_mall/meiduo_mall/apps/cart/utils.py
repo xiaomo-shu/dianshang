@@ -39,7 +39,7 @@ def merge_cart_cookie_to_redis(request, user, response):
     #     }
     # }
 
-    # 处理数据
+    # 处理cookie中的数据为如下格式:
     # cart = {
     #     '<sku_id>': '<count>',
     #     '<sku_id>': '<count>',
@@ -74,6 +74,8 @@ def merge_cart_cookie_to_redis(request, user, response):
     if redis_selected_remove:
         # 从redis中对应set集合中移除不被勾选的商品的sku_id
         pipeline.srem(cart_selected_key, *redis_selected_remove)
+
+    pipeline.execute()
 
     # 清除cookie
     response.delete_cookie('cart')

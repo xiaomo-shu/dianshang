@@ -10,6 +10,7 @@ from rest_framework.generics import GenericAPIView, CreateAPIView, RetrieveAPIVi
 from rest_framework.mixins import CreateModelMixin, RetrieveModelMixin, UpdateModelMixin, ListModelMixin
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_jwt.views import ObtainJSONWebToken
 
 from .models import User
 from .serializers import CreateUserSerializer, UserDetailSerializer, EmailSerializer
@@ -20,8 +21,29 @@ from . import constants
 from goods.models import SKU
 from goods.serializers import SKUSerializer
 
-
+from cart.utils import merge_cart_cookie_to_redis
 # Create your views here.
+
+
+class UserAuthorizeView(ObtainJSONWebToken):
+    """
+    用户认证
+    """
+    def post(self, request, *args, **kwargs):
+        # 调用父类中的post方法实现用户名密码的验证和签发JWT token
+        response = super().post(request, *args, **kwargs)
+
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid():
+            # 用户登录成功
+            # 获取登录用户user
+            user = serializer.validated_data['user']
+            # 合并购物车记录
+            merge_cart_cookie_to_redis(request, user , response)
+
+        return response
+
 
 # /browse_histories/
 # class UserBrowseHistoryView(CreateModelMixin, GenericAPIView):
@@ -100,7 +122,7 @@ class AddressViewSet(CreateModelMixin, UpdateModelMixin, GenericViewSet):
         """
         # 检查用户地址数据数目不能超过上限
         # count = request.user.addresses.count()
-        count = request.user.addresses.filter(is_delete=False).count()
+        count = request.user.addresses.filter(is_deleted=False).count()
         if count >= constants.USER_ADDRESS_COUNTS_LIMIT:
             return Response({'message': '保存地址数据已达到上限'}, status=status.HTTP_400_BAD_REQUEST)
 

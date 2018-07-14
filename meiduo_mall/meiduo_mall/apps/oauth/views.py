@@ -20,6 +20,14 @@ logger = logging.getLogger('django')
 # GET /oauth/qq/user/?code=xxx
 class QQAuthUserView(CreateAPIView):
     serializer_class = OAuthQQUserSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+
+        # 合并cookie中的购物车记录到redis中
+
+        return response
+
     # def post(self, request):
     #     """
     #     绑定QQ用户:
@@ -74,6 +82,9 @@ class QQAuthUserView(CreateAPIView):
                 'user_id': user.id,
                 'username': user.username
             })
+
+            # 合并cookie中的购物车记录到redis中
+
             return response
 
 
