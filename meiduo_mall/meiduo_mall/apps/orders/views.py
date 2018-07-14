@@ -18,6 +18,8 @@ from .serializers import SaveOrderSerializer
 class OrdersView(CreateAPIView):
     serializer_class = SaveOrderSerializer
 
+    permission_classes = [IsAuthenticated]
+
     # def post(self, request):
     #     """
     #     保存订单信息:
