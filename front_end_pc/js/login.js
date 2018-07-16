@@ -85,7 +85,7 @@ var vm = new Vue({
         qq_login: function(){
             var next = this.get_query_string('next') || '/';
             axios.get(this.host + '/oauth/qq/authorization/?next=' + next, {
-                    responseType: 'json'
+                    responseType: 'json',
                 })
                 .then(response => {
                     location.href = response.data.login_url;

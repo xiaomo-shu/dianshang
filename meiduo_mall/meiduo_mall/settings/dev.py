@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'goods.apps.GoodsConfig',
     'cart.apps.CartConfig',
     'orders.apps.OrdersConfig',
+    'payment.apps.PaymentConfig',
 ]
 
 # from django.contrib.auth.middleware import AuthenticationMiddleware
@@ -236,6 +237,7 @@ LOGGING = {
 # logger.info('info message')
 
 # from rest_framework_jwt.authentication import  JSONWebTokenAuthentication
+# from rest_framework.authentication import SessionAuthentication
 # DRF框架的配置
 REST_FRAMEWORK = {
     # 异常处理
@@ -341,3 +343,9 @@ HAYSTACK_CONNECTIONS = {
 
 # 当添加、修改、删除数据时，自动生成索引
 HAYSTACK_SIGNAL_PROCESSOR = 'haystack.signals.RealtimeSignalProcessor'
+
+
+# 支付宝
+ALIPAY_APPID = "2016090800464054"
+ALIPAY_URL = "https://openapi.alipaydev.com/gateway.do"
+ALIPAY_DEBUG = True
