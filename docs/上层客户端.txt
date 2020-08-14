@@ -1,0 +1,160 @@
+1、终端登录									
+service_code: 9010
+{
+	"mac": "xxxxx", 
+	"ip": "xxxxxxx"
+}
+
+2、管理员登录
+service_code: 9008
+{
+	"mac": "xxxxxx"
+	"username": "admin",
+	"password": "password_md5"				// 密码md5
+	
+}
+						
+2、登录成功后，客户端上报桌面基本信息
+service_code: 9012
+{
+	"boot_disk": "voi_0_xxxxxxxxxx"
+}
+
+return:
+{
+	"code": 0,
+	"msg": "Success",
+	"data": {
+		"name": "xxxx",					// 模板名称
+		"uuid": "xxxxx",				// 模板uuid
+		"desktop_group_name": "",		// 桌面组名称
+		"last_update_time": "xxxxx"		// 最后更新时间
+		
+	}
+}
+
+3、客户端上报本地差异磁盘信息
+service_code: 9011
+{
+	"uuid": "xxxxxxxx",
+	"sys_type": 1,
+	"name": "zhuomian1",
+	"desc": "描述",
+	"disks": [
+		{
+			"uuid": "xxxxxxx",
+			"type": 1,
+			"prefix": "voi",
+			"diff_level": 0,
+			"real_size": 24,
+			"resrver_size" : 50
+		}
+	]
+}
+
+4、服务端下发下载指令,直接下发种子
+service_code: 1015
+{
+	
+}
+5、服务端下发上传指令
+service_code: 1020
+
+{
+	"uuid": "xxxxxxxx",
+	"sys_type": 1,
+	"name": "zhuomian1",
+	"desc": "描述",
+	"disks": [
+		{
+			"uuid": "xxxxxxx",
+			"type": 1,
+			"prefix": "voi",
+			"diff_level": 0,
+			"real_size": 24,
+			"resrver_size" : 50
+		}
+	]
+}
+
+
+6、客户端上传种子前校验服务器状态
+service_code: 9018
+{
+	"uuid": "xxxxxxxx",
+	"sys_type": 1,
+	"name": "zhuomian1",
+	"desc": "描述",
+	"disks": [
+		{
+			"uuid": "xxxxxxx",
+			"type": 1,
+			"prefix": "voi",
+			"diff_level": 0,
+			"real_size": 24,
+			"resrver_size" : 50
+		}
+	]
+}
+
+return: 
+{
+	"code" : 0,
+	"msg": "Success",
+	"data": {
+		"can_update": 0 // 0 - 不能， 1 - 能
+	}
+}
+7、客户端上传种子文件
+service_code: 9014 , # 文件二进制传输
+{
+	
+}
+
+return:
+{
+	"code": 0,
+	"msg": "Success",
+	"data": {
+		"torrent_id": "xxxxxx"
+	}
+}
+
+8、服务端下发下载完成指令
+service_code: 1021
+{
+	"torrent_id": "xxxxxxxx"
+}
+
+9、客户端上报下载完成指令
+service_code:  9015
+{
+	"mac": "xxxxxx",
+	"ip": "xxxxx",
+	"disk": "voi_0_xxxxxxxxxx",
+	"result": 0   // 0 - 未开始，1 - 成功， 2 - 失败
+}
+10、服务端下发水印开启指令、
+11、服务端下发水印关闭指令
+service_code: 1022
+{
+	"switch": 0		// 0 - 关闭， 1 - 开启
+}
+12、服务端下发重启电脑指令
+service_code: 1002
+13、服务端下发关闭电脑指令
+service_code: 1001
+
+14、bt服务tracker地址
+service_code: 9019
+{
+	"mac": "xxxxxxx"
+}
+return: 
+{
+	"code": 0,
+	"msg": "Success",
+	"data": {
+		"tracker": ["http://xxxxx"]
+	}
+}

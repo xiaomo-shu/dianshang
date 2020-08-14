@@ -1,0 +1,1 @@
+from web_manage.yzy_resource_mgr.models import *

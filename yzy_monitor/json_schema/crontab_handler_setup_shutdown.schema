@@ -1,0 +1,87 @@
+{
+  "definitions": {},
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "http://example.com/root.json",
+  "type": "object",
+  "title": "The Root Schema",
+  "required": [
+    "handler",
+    "command",
+    "data"
+  ],
+  "properties": {
+    "handler": {
+      "$id": "#/properties/handler",
+      "type": "string",
+      "title": "The Handler Schema",
+      "default": "",
+      "examples": [
+        "CrontabHandler"
+      ],
+      "pattern": "CrontabHandler"
+    },
+    "command": {
+      "$id": "#/properties/command",
+      "type": "string",
+      "title": "The Command Schema",
+      "default": "",
+      "examples": [
+        "setup_shutdown"
+      ],
+      "pattern": "setup_shutdown"
+    },
+    "data": {
+      "$id": "#/properties/data",
+      "type": "object",
+      "title": "The Data Schema",
+      "required": [
+        "task_name",
+        "exec_minute",
+        "exec_hour",
+        "exec_weekly"
+      ],
+      "properties": {
+        "task_name": {
+          "$id": "#/properties/data/properties/task_name",
+          "type": "string",
+          "title": "The Task_name Schema",
+          "default": "",
+          "examples": [
+            "shutdown3"
+          ],
+          "pattern": "^([a-zA-Z0-9]+)$"
+        },
+        "exec_minute": {
+          "$id": "#/properties/data/properties/exec_minute",
+          "type": "string",
+          "title": "The Exec_minute Schema",
+          "default": "",
+          "examples": [
+            "55"
+          ],
+          "pattern": "^([0-9]+)$"
+        },
+        "exec_hour": {
+          "$id": "#/properties/data/properties/exec_hour",
+          "type": "string",
+          "title": "The Exec_hour Schema",
+          "default": "",
+          "examples": [
+            "3"
+          ],
+          "pattern": "^([0-9]+)$"
+        },
+        "exec_weekly": {
+          "$id": "#/properties/data/properties/exec_weekly",
+          "type": "string",
+          "title": "The Exec_weekly Schema",
+          "default": "",
+          "examples": [
+            "1,2"
+          ],
+          "pattern": "^([0-9,]+)$"
+        }
+      }
+    }
+  }
+}
