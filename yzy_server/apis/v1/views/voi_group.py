@@ -28,7 +28,15 @@ class VoiEducationGroupAPI(MethodView):
                     "group_type": 1,
                     "desc": "this is group1",
                     "start_ip": "",
-                    "end_ip": ""
+                    "end_ip": "",
+                    "dhcp": {
+                        "start_ip": "172.16.1.40",
+                        "end_ip": "172.16.1.54",
+                        "exclude": [
+                            {"start": "172.16.1.24", "end": "172.16.1.24"},
+                            {"start": "172.16.1.24", "end": "172.16.1.24"}
+                        ]
+                    }
                 }
                 """
                 result = VoiGroupController().create_group(data)
@@ -45,7 +53,17 @@ class VoiEducationGroupAPI(MethodView):
                         "name": "group2",
                         "desc": "",
                         "start_ip": "",
-                        "end_ip": ""
+                        "end_ip": "",
+                        "dhcp": {
+                            "start_ip": "172.16.1.40",
+                            "end_ip": "172.16.1.54",
+                            "netmask": "255.255.255.0",
+                            "gateway": "172.16.1.254",
+                            "exclude": [
+                                {"start": "172.16.1.24", "end": "172.16.1.24"},
+                                {"start": "172.16.1.24", "end": "172.16.1.24"}
+                            ]
+                        }
                     }
                 }
                 """
@@ -58,7 +76,7 @@ class VoiEducationGroupAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("voi group action %s failed:%s", action, e)
+            logger.exception("voi group action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

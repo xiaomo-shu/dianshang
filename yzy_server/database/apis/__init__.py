@@ -4,9 +4,12 @@ from yzy_server.database.apis.node import get_node_by_ip
 from yzy_server.database.apis.node import get_nodes_by_uuids
 from yzy_server.database.apis.node import get_node_by_pool_uuid
 from yzy_server.database.apis.node import get_controller_node
+from yzy_server.database.apis.node import get_backup_node
 from yzy_server.database.apis.node import add_server_node
 from yzy_server.database.apis.node import get_node_with_all
 from yzy_server.database.apis.node import get_node_storage_all
+from yzy_server.database.apis.node import get_node_storage_first
+from yzy_server.database.apis.node import get_node_storage_by_path
 from yzy_server.database.apis.node import get_controller_image
 from yzy_server.database.apis.node import get_node_with_first
 from yzy_server.database.apis.node import get_template_sys_storage
@@ -19,6 +22,11 @@ from yzy_server.database.apis.node import get_service_by_name
 from yzy_server.database.apis.node import get_node_manage_nic_name
 from yzy_server.database.apis.node import add_monitor_half_min
 from yzy_server.database.apis.node import clear_monitor_half_min
+from yzy_server.database.apis.node import select_controller_image_ip
+from yzy_server.database.apis.node import add_ha_info
+from yzy_server.database.apis.node import get_ha_info_by_uuid
+from yzy_server.database.apis.node import get_ha_info_all
+from yzy_server.database.apis.node import get_ha_info_first
 
 from yzy_server.database.apis.network import get_default_network
 from yzy_server.database.apis.network import get_network_by_uuid
@@ -43,6 +51,7 @@ from yzy_server.database.apis.network import get_nic_ips_all
 from yzy_server.database.apis.network import add_nic_ip
 from yzy_server.database.apis.network import get_nic_ip_by_uuid
 from yzy_server.database.apis.network import get_nic_ip_by_name
+from yzy_server.database.apis.network import get_nic_ip_by_ip
 from yzy_server.database.apis.network import get_interface_by_network
 from yzy_server.database.apis.network import get_network_by_nic
 from yzy_server.database.apis.network import add_nic
@@ -55,6 +64,7 @@ from yzy_server.database.apis.desktop import create_instance_template
 from yzy_server.database.apis.desktop import get_instance_template
 from yzy_server.database.apis.desktop import get_voi_instance_template
 from yzy_server.database.apis.desktop import get_voi_devices_with_all
+from yzy_server.database.apis.desktop import get_voi_operate_with_all
 from yzy_server.database.apis.desktop import get_template_mac
 from yzy_server.database.apis.desktop import get_voi_template_mac
 from yzy_server.database.apis.desktop import get_instance_mac
@@ -112,6 +122,25 @@ from yzy_server.database.apis.desktop import get_terminal_with_all
 from yzy_server.database.apis.desktop import get_template_by_uuid_first
 from yzy_server.database.apis.desktop import get_instance_first
 from yzy_server.database.apis.desktop import get_desktop_with_first
+from yzy_server.database.apis.desktop import create_course_many
+from yzy_server.database.apis.desktop import create_course_schedule_many
+from yzy_server.database.apis.desktop import create_course_template
+from yzy_server.database.apis.desktop import get_course_schedule_with_first
+from yzy_server.database.apis.desktop import get_course_schedule_with_all
+from yzy_server.database.apis.desktop import get_course_template_with_first
+from yzy_server.database.apis.desktop import get_course_template_with_all
+from yzy_server.database.apis.desktop import get_course_with_all
+from yzy_server.database.apis.desktop import get_course_with_first
+from yzy_server.database.apis.desktop import get_term_with_first
+from yzy_server.database.apis.desktop import get_term_with_all
+from yzy_server.database.apis.desktop import create_term
+from yzy_server.database.apis.desktop import update_course_schedule_many
+from yzy_server.database.apis.desktop import get_distinct_course_template_uuids_by_course_schedule
+from yzy_server.database.apis.desktop import get_distinct_course_template_uuids_by_course
+from yzy_server.database.apis.desktop import get_distinct_course_schedule_week_nums
+from yzy_server.database.apis.desktop import delete_course_schedule_many
+from yzy_server.database.apis.desktop import delete_course_template_many_by_uuids
+from yzy_server.database.apis.desktop import delete_course_many_by_course_template_uuids
 
 from yzy_server.database.apis.resource_pool import get_resource_pool_list
 from yzy_server.database.apis.resource_pool import get_resource_pool_by_key
@@ -143,6 +172,9 @@ from yzy_server.database.apis.system import get_warning_log_all
 from yzy_server.database.apis.system import get_operation_log_all
 from yzy_server.database.apis.system import get_warn_setup_first
 from yzy_server.database.apis.system import create_warn_setup
+from yzy_server.database.apis.system import create_task_info
+from yzy_server.database.apis.system import get_task_info_first
+from yzy_server.database.apis.system import get_task_with_type_all
 
 from yzy_server.database.apis.voi import create_voi_group
 from yzy_server.database.apis.voi import create_voi_template
@@ -156,4 +188,8 @@ from yzy_server.database.apis.voi import create_voi_device
 from yzy_server.database.apis.voi import get_item_with_all
 from yzy_server.database.apis.voi import get_item_with_first
 from yzy_server.database.apis.voi import delete_voi_terminal_desktops
+
+from yzy_server.database.apis.remote_storage import add_remote_storage
+from yzy_server.database.apis.remote_storage import get_remote_storage_by_key
+from yzy_server.database.apis.remote_storage import update_remote_storage
 

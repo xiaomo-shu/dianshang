@@ -10,6 +10,7 @@ EXT_SETSID = '@SETSID_PATH@'
 # BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = '/usr/local/yzy-kvm/'
 LOG_PATH = '/var/log/yzy_kvm/'
+TERMINAL_LOG_PATH = '/var/log/yzy_kvm/terminal/'
 
 ################ compute ########################
 # Binary kilo unit
@@ -48,6 +49,7 @@ IP_ANY = {IP_VERSION_4: IPv4_ANY, IP_VERSION_6: IPv6_ANY}
 
 IMAGE_TYPE_SYSTEM = 'system'
 IMAGE_TYPE_DATA = 'data'
+IMAGE_TYPE_SHARE = 'share'
 IMAGE_CACHE_DIRECTORY_NAME = '_base'
 DISK_FILE_PREFIX = 'disk-'
 IMAGE_FILE_PREFIX = 'version_%s_'
@@ -59,6 +61,8 @@ VOI_FILE_PREFIX = 'voi-'
 VOI_BASE_PREFIX = 'voi_%s_'
 VOI_SHARE_BASE_PREFIX = 'voi_%s_'
 VOI_BASE_NAME = 'voi-%08x'
+TFTP_PATH = "/var/lib/tftpboot"
+DHCP_CONF = "/etc/dhcp/dhcpd.conf"
 DOMAIN_STATE = {
     'nostate': 0,       # no state
     'running': 1,       # the domain is running
@@ -94,6 +98,10 @@ VOI_TERMINAL_DEFAULT_PORT = 50005
 VOI_TERMINAL_LISTEN_DEFAULT_PORT = 50007
 UPGRADE_DEFAULT_PORT = 50008
 SCHEDULER_DEFAULT_PORT = 50009
+UKEY_DEFAULT_PORT = 50010
+WARNING_PLATFORM_PORT = 50011
+
+VOI_TERMINAL_UPGRADE_PORT=50019
 
 BT_TERMINAL_HTTP_PORT = 50020
 BT_FILE_TRANS_PORT = 50021
@@ -113,6 +121,8 @@ DEFAULT_SYS_PATH = '/opt/instances'
 DEFAULT_DATA_PATH = '/opt/datas'
 DEFAULT_TORRENT_PATH = '/opt/torrent'
 VIRTIO_PATH = '/opt/iso/virtio-win.iso'
+TERMINAL_RESOURCES_PATH = "/opt/terminal_resources.xlsx"
+TERMINAL_HARDWARE_PATH = "/opt/terminal_hardware.xlsx"
 SERVER_SYNC_URL = "/api/v1/image/download"
 IMAGE_SYNC_URL = "/api/v1/resource_pool/images/download"
 HA_SYNC_URL = "/api/v1/node/ha_sync"
@@ -138,7 +148,7 @@ STATUS_ROLLBACK = "rollback"
 STATUS_COPING = "coping"
 STATUS_DOWNLOADING = "downloading"
 STATUS_UPLOADING = "uploading"
-COMPUTE_SERVICE = ["libvirtd", "yzy-compute", "yzy-monitor", "yzy_upgrade"]
+COMPUTE_SERVICE = ["libvirtd", "yzy-compute", "yzy-monitor", "yzy-upgrade"]
 NETWORK_SERVICE = ["mariadb", "nginx", "redis", "yzy-web", "yzy-server", "yzy-terminal",
                    "ukey", "top_server", "yzy-terminal-agent", "torrent"]
 MASTER_SERVICE = COMPUTE_SERVICE + NETWORK_SERVICE
@@ -154,6 +164,11 @@ ALLOCATE_FIX_TYPE = 2
 RANDOM_DESKTOP = 1
 # 个人桌面中的静态桌面
 STATIC_DESKTOP = 2
+
+# 教学分组
+EDUCATION_GROUP = 1
+# 用户分组
+PERSONAL_GROUP = 2
 
 # 教学桌面
 EDUCATION_DESKTOP = 1
@@ -180,10 +195,71 @@ DEVICE_NEED_ADDED = 2
 BT_DOWNLOAD_TASK = 1
 BT_UPLOAD_TASK = 2
 
+# BT任务状态
+# BT_TASK_INIT = 0
+# BT_TASK_CHECKING = 1
+# BT_TASK_DOWNING = 2
+# BT_TASK_SEEDING = 3
+# BT_TASK_FINISH = 5
+
+# BT任务状态
+BT_TASK_INIT = 0
+BT_TASK_CHECKING_OR_DOWNING = 1
+BT_TASK_FINISH = 2
+BT_TASK_SEEDING = 3
+# BT_TASK_FINISH = 5
+
 # socket buff
 BUF_SIZE = 1024 * 1024
 
 PARALELL_QUEUE = 'yzy_parallel_queue'
+AUTH_SIZE_KEY = 'yzy_auth_num'
 PARALELL_NUM = 20
+CHRONYD_CONF = "/etc/chrony.conf"
+LV_PATH_PREFIX = '/opt'
+
+# HA相关状态
+HA_STATUS_NORMAL = 0
+HA_STATUS_FAULT = 1
+HA_STATUS_UNKNOWN = 2
 
 
+# 课表已启用
+COURSE_SCHEDULE_ENABLED = 1
+# 课表已禁用
+COURSE_SCHEDULE_DISABLED = 0
+
+# 任务信息状态
+TASK_ERROR = "error"
+TASK_RUNNING = "running"
+TASK_QUEUE = "queue"
+TASK_COMPLETE = "complete"
+
+# 任务名称及类型映射关系
+NAME_TYPE_MAP = {
+    1: "上传镜像",
+    2: "发布镜像",
+    3: "桌面组批量开机",
+    4: "桌面组批量关机",
+    5: "桌面组批量重启",
+    6: "导出用户数据",
+    7: "新建模板",
+    8: "复制模板",
+    9: "下载模板",
+    10: "桌面定时开关机",
+    11: "节点定时关机",
+    12: "终端定时关机",
+    13: "差异盘同传",
+    14: "系统盘创建"
+}
+
+LICENSE_DIR = os.path.join(BASE_DIR, "license")
+READ_UKEY_INTERVAL = 1 * 60
+CID = b'yzy'
+VERSION = 1
+IS_REQ = 0
+IS_RESP = 1
+SEQ_ID = 0
+CLIENT_ID = 0
+SERVER_CLIENT_ID = 201
+NFS_MOUNT_POINT_PREFIX = '/opt/nfs_'

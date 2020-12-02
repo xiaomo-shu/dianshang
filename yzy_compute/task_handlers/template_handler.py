@@ -95,21 +95,18 @@ class TemplateProcess(object):
                 "command": "convert",
                 "handler": "TemplateHandler",
                 "data": {
-                    "new_image_id": "ef0b7c2c-31c1-11ea-ae30-000c2902e179",
                     "template": {
                         "uuid": "dfcd91e8-30ed-11ea-9764-111c2902e179",
-                        "base_path": "/opt/ssd"
-                        "system_uuid": "dfcd91e8-30ed-11ea-9764-000c2902e179",  # 系统盘的uuid
-                        "image_version": 0,
-                        "image_id": "196df26e-2b92-11ea-a62d-000c29b3ddb9",
+                        "backing_file": "/opt/ssd"
+                        "dest_file": "dfcd91e8-30ed-11ea-9764-000c2902e179"
+                        "need_convert": 0
                     }
                 }
             }
         """
         logging.info("TemplateHandler, convert task begin, data:%s", self.task)
         template = self.task['data']['template']
-        new_image = self.task['data']['new_image_id']
-        return ImageService().convert(template, new_image)
+        return ImageService().convert(template)
 
     def write_header(self):
         """
@@ -148,18 +145,18 @@ class TemplateProcess(object):
                     "images": [
                         {
                             "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                            "image_path": "/opt/ssd"
+                            "backing_file": "/opt/ssd"
                         },
                         {
                             "image_id": "1ed81518-2b92-11ea-a62d-000c29b3ddb9",
-                            "image_path": "/opt/ssd"
+                            "backing_file": "/opt/ssd"
                         },
                         ...
                     ]
                 }
             }
         """
-        logging.info("InstanceHandler, delete task begin, data:%s", self.task)
+        logging.info("TemplateHandler, delete task begin, data:%s", self.task)
         instance = self.task['data']['instance']
         images = self.task['data']['images']
         image_version = self.task['data']['image_version']
@@ -174,7 +171,7 @@ class TemplateProcess(object):
                 "data": {
                     "disks": [
                         {
-                            "disk_path": "",
+                            "disk_file": "",
                             "backing_file": ""
                         },
                         ...
@@ -182,7 +179,7 @@ class TemplateProcess(object):
                 }
             }
         """
-        logging.info("TemplateHandler, save task begin, data:%s", self.task['data'])
+        logging.info("TemplateHandler, recreate task begin, data:%s", self.task['data'])
         disks = self.task['data']['disks']
         ImageService().recreate_disks(disks)
 
@@ -200,8 +197,10 @@ class TemplateProcess(object):
                     "image":
                         {
                             "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                            "image_path": "",
-                            "base_path": ""
+                            "disk_file": "",
+                            "backing_file": "",
+                            "dest_path": "",
+                            "md5_sum": ""
                         }
                 }
             }
@@ -222,20 +221,18 @@ class TemplateProcess(object):
                 "command": "copy",
                 "handler": "TemplateHandler",
                 "data": {
-                    "image_version": 1,     # 只保留一个版本，所以复制时版本是1
                     "image":
                     {
                         "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                        "base_path": "",
-                        "new_image_id": ""
+                        "backing_file": "",
+                        "dest_file": ""
                     }
                 }
             }
         """
         logging.info("TemplateHandler, copy task begin, data:%s", self.task['data'])
-        image_version = self.task['data'].get('image_version', 1)
         image = self.task['data']['image']
-        return ImageService().copy_images(image, image_version)
+        return ImageService().copy_images(image)
 
     def delete_base(self):
         """
@@ -245,19 +242,16 @@ class TemplateProcess(object):
                 "command": "delete_base",
                 "handler": "TemplateHandler",
                 "data": {
-                    "image_version": 0,
                     "image":
                     {
-                        "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                        "base_path": "/opt/slow/instances/
+                        "disk_file": ""
                     }
                 }
             }
         """
         logging.info("TemplateHandler, delete image base, data:%s", self.task['data'])
-        image_version = self.task['data'].get('image_version', 0)
         image = self.task['data']['image']
-        return ImageService().delete_image(image, image_version)
+        return ImageService().delete_image(image)
 
     def attach_source(self):
         """
@@ -346,17 +340,14 @@ class TemplateProcess(object):
                 "command": "resize",
                 "handler": "TemplateHandler",
                 "data": {
-                    "uuid": "",
                     # size is the add size, not disk size
                     "images": [
                         {
-                            "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                            "base_path": "",
+                            "disk_file": "",
                             "size": 50
                         },
                         {
-                            "image_id": "1ed81518-2b92-11ea-a62d-000c29b3ddb9",
-                            "base_path": "",
+                            "disk_file": "",
                             "size": 50
                         },
                         ...
@@ -365,9 +356,8 @@ class TemplateProcess(object):
             }
         """
         logging.info("TemplateHandler, resize task begin, data:%s", self.task['data'])
-        uuid = self.task['data']['uuid']
         images = self.task['data']['images']
-        ImageService().resize_disk(uuid, images)
+        ImageService().resize_disk(images)
 
     def create_file(self):
         """
@@ -400,14 +390,12 @@ class TemplateProcess(object):
                         },
                     "images": [
                     {
-                        "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
-                        "image_path": "",
-                        "base_path": ""
+                        "disk_file": "",
+                        "backing_file": ""
                     },
                     {
-                        "image_id": "1ed81518-2b92-11ea-a62d-000c29b3ddb9",
-                        "image_path": "",
-                        "base_path": ""
+                        "disk_file": "",
+                        "backing_file": ""
                     },
                     ...
                     ]
@@ -434,12 +422,11 @@ class TemplateProcess(object):
                     "disk": {
                         'uuid': '2f110de8-78d8-11ea-ad5d-000c29e84b9c',
                         'dev': 'vda',
-                        'image_id': '47b2807a-78a6-11ea-8454-000c29e84b9c',
-                        'image_version': 1,
+                        'disk_file': '',
+                        'backing_file': "",
                         'boot_index': 0,
                         'bus': 'virtio',
-                        'type': 'disk',
-                        'base_path': '/opt/slow/instances'
+                        'type': 'disk'
                     }
                 }
             }
@@ -461,15 +448,15 @@ class TemplateProcess(object):
                         "uuid": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
                         "name": "template1",
                     },
-                    "data_base": "",
-                    "disk_uuid": "",
+                    "disk_file": "",
+                    "backing_file": "",
                     "delete_base": true
                 }
             }
         """
         logging.info("TemplateHandler, detach disk task begin, data:%s", self.task['data'])
-        base_path = self.task['data']["data_base"]
-        disk_uuid = self.task['data']['disk_uuid']
+        disk_file = self.task['data']["disk_file"]
+        backing_file = self.task['data']["backing_file"]
         delete_base = self.task['data'].get('delete_base', False)
         instance = self.task['data']['instance']
-        LibvirtDriver().detach_disk(instance, base_path, disk_uuid, delete_base)
+        LibvirtDriver().detach_disk(instance, disk_file, backing_file, delete_base)

@@ -984,7 +984,7 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
                 {
                     "template": "f246956c-b1ce-4c70-aa40-4b3ac276a3df",
                     "template_name": "template1",
-                    "tempalte_status": "inactive",
+                    "template_status": "inactive",
                     "group": "02431a03-178c-41ee-a74d-492cc924933e",
                     "group_name": "group2",
                     "os_type": "windows_7_x64",

@@ -15,5 +15,7 @@ urlpatterns = [
     path('logs/warn/setup/',  views.WarningLogSetupView.as_view(), name='warn-log-setup'),
     path('upgrade/', views.UpgradeView.as_view(), name='upgrade'),
     path('logs/setup/cron/',  views.LogSetupCronView.as_view(), name='log-setup-cron'),
+    path('task_info',  views.TaskInfoView.as_view(), name='task_info'),
+    path('strategy/system_time',  views.SetSystemTime.as_view(), name='set_system_time'),
 
 ]

@@ -195,19 +195,48 @@ def main(n=1):
         #     print("发送种子： ", _s)
 
 
+def upload_log():
+    msg = b'\x01\x00\x01\x00)#\x00\x00\x01\x00\x00\x00+\x00\x00\x00\x01\x00\x02\x01\x00\x00\x00\x00{"mac": "11111-test2", "ip": "172.16.1.56"}'
+    s = socket(AF_INET, SOCK_STREAM)
+    s.connect(('192.169.27.197', 50007))
+    t = time.time()
+    s.send(msg)
+    h = s.recv(8192)
+    print(h)
+    s1 = h[h.find(b"{"):]
+    js_s1 = json.loads(s1)
+    print(s1)
+    token_bin = js_s1["data"]["token"].encode("utf-8")
+    pay_load = b""
+    with open("test.txt", "rb") as f:
+        pay_load = f.read()
+
+    bus_msg_str = create_msg(9999, token_bin, pay_load, False)
+    print(bus_msg_str)
+    s.send(bus_msg_str)
+    header = s.recv(24)
+    print(header)
+    version_chief, version_sub, service_code, sequence_code, data_size, data_type, encoding, client_type, req_or_res, \
+    token_len, supplementary = struct.unpack("HHIIIBBBBHH", header)
+    print(service_code)
+    body = s.recv(data_size + token_len)
+    print(b"body: " + body)
+
+
 if __name__ == '__main__':
+    upload_log()
     # serv = TCPServer(('', 20000), EchoHandler)
     # serv.serve_forever()
     # while True:
     #     main()
     #     time.sleep(5)
-    threads = list()
-    for i in range(30):
-        th = threading.Thread(target=main, args=(i,))
-        threads.append(th)
-
-    for th in threads:
-        th.start()
-        time.sleep(0.01)
+    # threads = list()
+    # for i in range(30):
+    #     th = threading.Thread(target=main, args=(i,))
+    #     threads.append(th)
+    #
+    # for th in threads:
+    #     th.start()
+    #     time.sleep(0.01)
         # th.join()
 

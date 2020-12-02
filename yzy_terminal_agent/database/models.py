@@ -2,7 +2,7 @@
 import json
 import datetime
 from sqlalchemy import CHAR, Column, DateTime, Index, String, text, Float, ForeignKey
-from sqlalchemy.dialects.mysql import INTEGER, TINYINT, BIGINT
+from sqlalchemy.dialects.mysql import INTEGER, TINYINT, BIGINT, TEXT
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -21,6 +21,10 @@ class BaseModelCtrl(object):
         """Make the model object behave like a dict."""
         for k, v in values.items():
             setattr(self, k, v)
+
+    def delete(self):
+        self.deleted = True
+        self.deleted_at = datetime.datetime.utcnow()
 
 
 class YzyVoiTerminal(Base, BaseModelCtrl):
@@ -97,23 +101,43 @@ class YzyVoiTorrentTask(Base, BaseModelCtrl):
     uuid = Column(String(64), nullable=False, comment='任务uuid')
     torrent_id = Column(String(64), nullable=False, comment='种子id')
     torrent_name = Column(String(64), nullable=False, comment='种子名称')
-    torrent_path = Column(String(64), nullable=False, comment='种子路径')
+    torrent_path = Column(String(200), nullable=False, comment='种子路径')
     torrent_size = Column(String(64), nullable=False,
                     comment='种子文件大小')
+    desktop_name = Column(String(32), nullable=False, comment='桌面组名称')
     template_uuid = Column(String(64), nullable=False, comment='对应模板uuid')
     disk_uuid = Column(String(64), nullable=False, comment='磁盘uuid')
     disk_name = Column(String(64), nullable=False, comment='磁盘名称')
+    disk_size = Column(Float, comment='磁盘文件大小，单位：G', nullable=False)
+    disk_type = Column(String(32), comment='磁盘类型, system/data', nullable=False)
+    save_path = Column(String(200), nullable=False, comment='文件保存路径')
     terminal_mac = Column(String(32), nullable=False, comment='终端mac')
     terminal_ip = Column(String(32), nullable=False, comment='终端ip')
     type = Column(TINYINT(1), nullable=False, comment='任务类型，0-上传，1-下载')
     status = Column(TINYINT(1), nullable=False, comment='任务状态，0-初始状态，1-进行中，2-完成')
     state = Column(String(32), server_default=text(""), nullable=False, comment='任务状态')
-    process = Column(INTEGER(11), nullable=False, comment='任务类型，0-上传，1-下载')
+    process = Column(INTEGER(11), nullable=False, comment='任务百分比')
     download_rate = Column(INTEGER(11), nullable=False, comment='下载速率', default=0)
+    upload_rate = Column(INTEGER(11), nullable=False, comment='上传速率', default=0)
+    batch_no = Column(INTEGER(11), nullable=False, comment='任务批次号', default=0)
+    sum = Column(INTEGER(5), nullable=False, comment='批次任务总数', default=1)
     deleted = Column(INTEGER(11), server_default=text("0"), nullable=False, comment='删除标志')
     deleted_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "uuid": self.uuid,
+            "torrent_id": self.torrent_id,
+            "torrent_path": self.torrent_path,
+            "desktop_name": self.desktop_name,
+            "template_uuid": self.template_uuid,
+            "disk_uuid": self.disk_uuid,
+            "disk_name": self.disk_name,
+            "disk_type": self.disk_type,
+            "save_path": self.save_path
+        }
 
 
 class YzyAdminUser(Base, BaseModelCtrl):
@@ -228,6 +252,118 @@ class YzyVoiTerminalToDesktops(Base, BaseModelCtrl):
     desktop_dns2 = Column(String(16), default="", comment='桌面DNS2')
     desktop_status = Column(INTEGER(11), nullable=False, default=0, comment='0-离线 1-在线')
     desktop_is_sent = Column(INTEGER(11), nullable=False, default=0, comment='桌面是否已经下发标志 0-未下发 1-已下发')
+    deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
+    deleted_at = Column(DateTime, comment='删除时间')
+    created_at = Column(DateTime, comment='创建时间')
+    updated_at = Column(DateTime, comment='更新时间')
+
+
+class YzyVoiDesktopGroup(Base, BaseModelCtrl):
+
+    __tablename__ = 'yzy_voi_desktop_group'
+    id = Column(INTEGER(11), primary_key=True)
+    uuid = Column(String(64), nullable=False)
+    name = Column(String(64), nullable=False)
+    owner_id = Column(INTEGER(11), default=0)
+    group_uuid = Column(String(64), nullable=False)
+    template_uuid = Column(String(64), nullable=False)
+    # template = relationship("YzyVoiTemplate", backref="desktop_of_voi_template")
+    os_type = Column(String(64), default='windows_7_x64')
+    sys_restore = Column(INTEGER(11), nullable=False, default=True)
+    data_restore = Column(INTEGER(11), nullable=False, default=True)
+    sys_reserve_size = Column(INTEGER(11), nullable=False, default=0)
+    data_reserve_size = Column(INTEGER(11), nullable=False, default=0)
+    prefix = Column(String(128), default='PC')
+    use_bottom_ip = Column(INTEGER(1), default=1)
+    ip_detail = Column(TEXT)
+    active = Column(INTEGER(1), default=0)
+    default = Column(INTEGER(1), default=0)
+    show_info = Column(INTEGER(1), default=0)
+    auto_update = Column(INTEGER(1), default=0)
+    diff_mode = Column(INTEGER(1), default=1)
+    deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
+    deleted_at = Column(DateTime, comment='删除时间')
+    created_at = Column(DateTime, comment='创建时间')
+    updated_at = Column(DateTime, comment='更新时间')
+
+
+class YzyVoiDeviceInfo(Base, BaseModelCtrl):
+
+    __tablename__ = 'yzy_voi_device_info'
+    id = Column(INTEGER(11), primary_key=True)
+    uuid = Column(String(64), nullable=False)
+    type = Column(String(32), nullable=False, default='data')
+    device_name = Column(String(32), nullable=False, default='')
+    image_id = Column(String(64))
+    instance_uuid = Column(String(64), nullable=False)
+    boot_index = Column(INTEGER(11), nullable=False, default=-1)
+    disk_bus = Column(String(32), default='virtio')
+    source_type = Column(String(32), default='file')
+    source_device = Column(String(32), default='disk')
+    size = Column(INTEGER(11), default=0)
+    section = Column(BIGINT(20), default=0)
+    used = Column(Float, default=0)
+    progress = Column(INTEGER(11), default=0)
+    upload_path = Column(String(255), default='')
+    deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
+    deleted_at = Column(DateTime, comment='删除时间')
+    created_at = Column(DateTime, comment='创建时间')
+    updated_at = Column(DateTime, comment='更新时间')
+
+
+class YzyHaInfo(Base, BaseModelCtrl):
+    __tablename__ = "yzy_ha_info"
+
+    id = Column(INTEGER(11), primary_key=True)
+    uuid = Column(String(64), nullable=False)
+    vip = Column(String(20), nullable=False)
+    netmask = Column(String(20), nullable=False)
+    quorum_ip = Column(String(20), nullable=False)
+    sensitivity = Column(INTEGER(11), nullable=False)
+    master_ip = Column(String(20), nullable=False)
+    backup_ip = Column(String(20), nullable=False)
+    master_nic = Column(String(32), nullable=False)
+    backup_nic = Column(String(32), nullable=False)
+    master_nic_uuid = Column(String(64), nullable=False)
+    backup_nic_uuid = Column(String(64), nullable=False)
+    master_uuid = Column(String(64), nullable=False)
+    backup_uuid = Column(String(64), nullable=False)
+    deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
+    deleted_at = Column(DateTime, comment='删除时间')
+    created_at = Column(DateTime, comment='创建时间')
+    updated_at = Column(DateTime, comment='更新时间')
+
+
+class YzyVoiTerminalPerformance(Base, BaseModelCtrl):
+    __tablename__ = "yzy_voi_terminal_performance"
+
+    id = Column(INTEGER(11), primary_key=True, comment='voi终端性能表')
+    uuid = Column(String(64), nullable=False, comment='uuid')
+    terminal_uuid = Column(String(64), nullable=False, comment='终端uuid')
+    terminal_mac = Column(String(32), comment='终端mac地址')
+    cpu_ratio = Column(Float(4), comment='运行cpu速率')
+    network_ratio = Column(Float(4), comment='网络速率')
+    memory_ratio = Column(Float(4), comment='内存占有率')
+    cpu_temperature = Column(Float(4), comment='cpu温度')
+    hard_disk = Column(Float(4), comment='硬盘占有率')
+    cpu = Column(TEXT, comment='cpu信息')
+    memory = Column(TEXT, comment='内存信息')
+    network = Column(TEXT, comment='网络信息')
+    hard = Column(TEXT, comment='硬盘信息')
+    deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
+    deleted_at = Column(DateTime, comment='删除时间')
+    created_at = Column(DateTime, comment='创建时间')
+    updated_at = Column(DateTime, comment='更新时间')
+
+
+class YzyVoiTerminalHardWare(Base, BaseModelCtrl):
+    __tablename__ = "yzy_voi_terminal_hard_ware"
+
+    id = Column(INTEGER(11), primary_key=True, comment='voi终硬件记录表')
+    uuid = Column(String(64), nullable=False, comment='uuid')
+    terminal_uuid = Column(String(64), nullable=False, comment='终端uuid')
+    terminal_mac = Column(String(32), comment='终端mac地址')
+    content = Column(TEXT, comment='硬件变更详情')
     deleted = Column(INTEGER(11), nullable=False, server_default=text("0"), comment='删除标记')
     deleted_at = Column(DateTime, comment='删除时间')
     created_at = Column(DateTime, comment='创建时间')

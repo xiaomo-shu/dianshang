@@ -9,4 +9,6 @@ urlpatterns = [
     path('terminals/', views.TerminalList.as_view(), name='voi-terminal-list'),
     path('terminals/sort/', views.TerminalSortList.as_view(), name='voi-terminal-list-sort'),
     path('terminal_operate/', views.TerminalOperate.as_view(), name='voi-terminal-operate'),
+    path('terminal/upgrade_pag/', views.TerminalUpgrade.as_view(), name='voi-terminal-upgrade'),
+
 ]

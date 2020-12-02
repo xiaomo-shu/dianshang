@@ -234,12 +234,99 @@ class ImageDeleteIOError(BaseException):
     code = 300022
     msg_fmt = "delete image %(image)s raise IOError"
 
+
+class ImageRebaseError(BaseException):
+    code = 300023
+    msg_fmt = "rebase image %(image)s raise IOError"
+
 #############################################################
+
 
 class BondException(BaseException):
     code = 300023
     msg_fmt = "Bond Error: %(error)s !"
 
+
 class UnBondException(BaseException):
     code = 300024
     msg_fmt = "UnBond Error: %(error)s !"
+
+
+class EnableHaException(BaseException):
+    code = 300025
+    msg_fmt = "Enable HA Error: %(error)s !"
+
+
+class DisableHaException(BaseException):
+    code = 300026
+    msg_fmt = "Disable HA Error: %(error)s !"
+
+
+class SwitchHaMasterException(BaseException):
+    code = 300027
+    msg_fmt = "Switch HA Master Error: %(error)s !"
+
+
+class VGNotExists(BaseException):
+    code = 300028
+    msg_fmt = "卷组'%(vg)s'不存在"
+
+
+class PVCreateError(BaseException):
+    code = 300029
+    msg_fmt = "创建物理卷'%(pv)s'失败: %(error)s"
+
+
+class VGExtendError(BaseException):
+    code = 300031
+    msg_fmt = "卷组'%(vg)s'扩容失败: %(error)s"
+
+
+class LVNotExists(BaseException):
+    code = 300032
+    msg_fmt = "逻辑卷'%(lv)s'不存在"
+
+
+class LVExtendError(BaseException):
+    code = 300033
+    msg_fmt = "逻辑卷'%(lv)s'扩容失败：%(error)s"
+
+
+class UnSupportFileFormat(BaseException):
+    code = 300034
+    msg_fmt = "不支持的文件系统类型：%(fstype)s"
+
+
+class LVFormatGetFailed(BaseException):
+    code = 300035
+    msg_fmt = "获取逻辑卷'%(lv)s'文件系统格式失败，请先格式化"
+
+
+class LVSyncFormatFailed(BaseException):
+    code = 300036
+    msg_fmt = "逻辑卷'%(lv)s'同步文件系统失败"
+
+
+class VGNoEnoughSize(BaseException):
+    code = 300037
+    msg_fmt = "卷组'%(vg)s'可用空间不足"
+
+
+class LVAlreadyExists(BaseException):
+    code = 300038
+    msg_fmt = "逻辑卷'%(lv)s'已存在"
+
+
+class LVCreateError(BaseException):
+    code = 300039
+    msg_fmt = "逻辑卷'%(lv)s'创建失败：%(error)s"
+
+
+class LVMountError(BaseException):
+    code = 300040
+    msg_fmt = "挂载'%(lv)s'到'%(mount_point)s'失败：%(error)s"
+
+
+class LVRemoveError(BaseException):
+    code = 300041
+    msg_fmt = "逻辑卷'%(lv)s'删除失败：%(error)s"

@@ -8,7 +8,7 @@ from common.utils import time_logger, build_result
 from yzy_server.utils import abort_error
 from yzy_server.apis.v1 import api_v1
 from yzy_server.apis.v1.controllers.system_ctl import DatabaseController, CrontabController, \
-    AdminAuthController, LogSetupManager
+    AdminAuthController, LogSetupManager, StrategyManager
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class AdminAuthAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("database back action %s failed:%d", action, e)
+            logger.exception("database back action %s failed:%d", action, e)
             return build_result("OtherError")
 
 
@@ -55,7 +55,7 @@ class DatabaseManagerAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("database back action %s failed:%d", action, e)
+            logger.exception("database back action %s failed:%d", action, e)
             return build_result("OtherError")
 
 
@@ -138,7 +138,7 @@ class CrontabManagerAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("crontab action %s failed:%s", action, e)
+            logger.exception("crontab action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -159,7 +159,26 @@ class WarnSetupManagerAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("warn setup action %s failed:%s", action, e)
+            logger.exception("warn setup action %s failed:%s", action, e)
+            return build_result("OtherError")
+
+
+class StrategyManagerAPI(MethodView):
+
+    @time_logger
+    def post(self, action):
+        try:
+            data = request.get_json()
+            if action == "set_system_time":
+                result = StrategyManager().set_system_time(data)
+            else:
+                return abort_error(404)
+            if result and isinstance(result, dict):
+                return jsonify(result)
+            else:
+                return build_result("ReturnError")
+        except Exception as e:
+            logger.exception("set system time failed:%s", e)
             return build_result("OtherError")
 
 
@@ -173,4 +192,7 @@ api_v1.add_url_rule('/system/admin/auth', view_func=AdminAuthAPI.as_view('admin-
 
 
 api_v1.add_url_rule('/system/warn/setup/<string:action>', view_func=WarnSetupManagerAPI.as_view('log_setup_manager'),
+                    methods=["POST"])
+
+api_v1.add_url_rule('/system/strategy/<string:action>', view_func=StrategyManagerAPI.as_view('strategy_set_manager'),
                     methods=["POST"])

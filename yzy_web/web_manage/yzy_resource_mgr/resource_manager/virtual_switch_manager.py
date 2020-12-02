@@ -40,12 +40,26 @@ class VirtualSwitchManager(object):
         if not uplinks:
             logger.error("create virtual switch error: not uplinks parameter %s"% data)
             return get_error_result("ParamError")
+
+        # 已启用HA的网卡不能绑定Flat类型的分布式虚拟交换机
+        ha_nic_uuids = list()
+        if data.get("type", "") == "Flat":
+            ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+
         for uplink in uplinks:
             # 判断每个链接的正确性
             node_uuid = uplink.get("node_uuid")
             node_name = uplink.get("node_name")
             nic_uuid = uplink.get("nic_uuid")
             nic_name = uplink.get("nic_name")
+
+            if ha_nic_uuids and nic_uuid in ha_nic_uuids:
+                return get_error_result("FlatVSUplinkNicHaError")
+
             node_network = self.get_object_by_uuid(YzyNodeNetworkInfo, nic_uuid)
             if node_network:
                 if node_network.node.uuid != node_uuid:

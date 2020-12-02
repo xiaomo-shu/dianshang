@@ -22,7 +22,10 @@ class IndexAPI(MethodView):
                 statis_period = data.get("statis_period", None)
                 if statis_period:
                     result = IndexController().get_top_data(statis_period)
-                    return result
+                else:
+                    result = dict()
+            elif action == "get_voi_data":
+                result = IndexController().get_voi_data(data)
             else:
                 result = abort_error(404)
             if result and isinstance(result, dict):

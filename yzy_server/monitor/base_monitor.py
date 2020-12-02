@@ -12,6 +12,7 @@ import ctypes
 from . import instance_monitor
 from . import node_monitor
 from . import performance_monitor
+from . import task_info_monitor
 
 
 logger = logging.getLogger(__name__)
@@ -53,13 +54,14 @@ all_monitor_task = list()
 
 def start_monitor():
     try:
-        all_monitor_task.append(BaseMonitor(instance_monitor.update_instance_info, 10))
+        all_monitor_task.append(BaseMonitor(instance_monitor.update_instance_info, 8))
         all_monitor_task.append(BaseMonitor(instance_monitor.update_template_info, 20))
         all_monitor_task.append(BaseMonitor(instance_monitor.update_template_disk_usage, 300))
         all_monitor_task.append(BaseMonitor(node_monitor.update_node_status, 30))
-        # all_monitor_task.append(BaseMonitor(node_monitor.ha_sync_task, 30))
+        all_monitor_task.append(BaseMonitor(node_monitor.ha_sync_task, 60))
         all_monitor_task.append(BaseMonitor(performance_monitor.update_node_performance, 30))
         all_monitor_task.append(BaseMonitor(performance_monitor.clear_performance_data, 60*60))
+        all_monitor_task.append(BaseMonitor(task_info_monitor.update_task_info_status, 60*60*24))
         for task in all_monitor_task:
             task.start()
     except Exception as ex:

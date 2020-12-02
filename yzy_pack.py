@@ -74,7 +74,8 @@ def run():
                     'binary': None,
                     'hooks_dir': None,
                     'hidden_import': None,
-                    'add_data': None
+                    'add_data': None,
+                    'exclude_module': None
                 }
                 for key in _d.keys():
                     if config.has_option(package.upper(), key):
@@ -110,6 +111,7 @@ def run():
                         # _d['binary'] = os.path.join(package_dir, _d['binary'])
                     else:
                         cmd.append('--add-binary=%s' % _d['binary'])
+
                 # add_data的dst指定了打包后的脚本
                 if _d['add_data']:
                     for data in _d['add_data'].split(','):
@@ -120,6 +122,10 @@ def run():
                 if _d['hidden_import']:
                     _d['hidden_import'] = _d['hidden_import'].split(',')
                     cmd.extend(['--hidden-import=%s' % hi for hi in _d['hidden_import']])
+
+                if _d['exclude_module']:
+                    _d['exclude_module'] = _d['exclude_module'].split(',')
+                    cmd.extend(['--exclude-module=%s' % ex for ex in _d['exclude_module']])
 
                 print(' '.join(cmd))
 

@@ -79,3 +79,37 @@ class YzyInterfaceIp2(SoftDeletableModel):
         # managed = False
         db_table = 'yzy_interface_ip'
         ordering = ['id']
+
+
+class YzyVoiTerminalPerformance(SoftDeletableModel):
+    uuid = models.CharField(unique=True, max_length=64)
+    terminal_uuid = models.CharField(unique=True, max_length=64)
+    terminal_mac = models.CharField(unique=True, max_length=32)
+    cpu_ratio = models.FloatField(default=0)
+    network_ratio = models.FloatField(default=0)
+    memory_ratio = models.FloatField(default=0)
+    cpu_temperature = models.FloatField(default=0)
+    hard_disk = models.FloatField(default=0)
+    cpu = models.TextField()
+    memory = models.TextField()
+    network = models.TextField()
+    hard = models.TextField()
+    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "yzy_voi_terminal_performance"
+        ordering = ['id']
+
+
+class YzyVoiTerminalHardWare(SoftDeletableModel):
+    uuid = models.CharField(unique=True, max_length=64)
+    terminal_uuid = models.CharField(unique=True, max_length=64)
+    terminal_mac = models.CharField(unique=True, max_length=32)
+    content = models.TextField()
+    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "yzy_voi_terminal_hard_ware"
+        ordering = ['id']

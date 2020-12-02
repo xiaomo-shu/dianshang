@@ -18,7 +18,7 @@ class HttpClient(object):
         else:
             port = constants.SERVER_DEFAULT_PORT
         endpoint = 'http://%s:%s' % ("127.0.0.1", port)
-        http_client = HTTPClient(endpoint, timeout=60)
+        http_client = HTTPClient(endpoint, timeout=90)
         headers = {
             "Content-Type": "application/json"
         }

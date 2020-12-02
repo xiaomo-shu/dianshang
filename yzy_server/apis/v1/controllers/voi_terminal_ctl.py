@@ -8,33 +8,53 @@ import ipaddress
 import netaddr
 import collections
 import hashlib
+import redis_lock
 from threading import Thread
 from flask import jsonify
 from .desktop_ctl import BaseController
 from yzy_server.database import apis as db_api
 from common.utils import build_result, create_uuid, find_ips, is_ip_addr, single_lock, compute_post, voi_terminal_post
 from common import constants
+from libs.yzyRedis import yzyRedis
 from yzy_server.database import models
 
 
 logger = logging.getLogger(__name__)
 
+# _redis = yzyRedis().init_app()
 
 class VoiTerminalController(object):
-    def _get_template_storage_path(self):
-        template_sys = db_api.get_template_sys_storage()
-        template_data = db_api.get_template_data_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        sys_path = os.path.join(sys_base, 'instances')
-        if not template_data:
-            data_base = constants.DEFAULT_DATA_PATH
-        else:
-            data_base = template_data.path
-        data_path = os.path.join(data_base, 'datas')
-        return sys_path, data_path
+
+    _redis = yzyRedis()
+    _redis.init_app()
+
+    # def _get_template_storage_path(self):
+    #     template_sys = db_api.get_template_sys_storage()
+    #     template_data = db_api.get_template_data_storage()
+    #     if not template_sys:
+    #         sys_base = constants.DEFAULT_SYS_PATH
+    #     else:
+    #         sys_base = template_sys.path
+    #     sys_path = os.path.join(sys_base, 'instances')
+    #     if not template_data:
+    #         data_base = constants.DEFAULT_DATA_PATH
+    #     else:
+    #         data_base = template_data.path
+    #     data_path = os.path.join(data_base, 'datas')
+    #     return sys_path, data_path
+
+    def _get_template_storage(self, node_uuid=None):
+        if not node_uuid:
+            node = db_api.get_controller_node()
+            node_uuid = node.uuid
+        template_sys = db_api.get_template_sys_storage(node_uuid)
+        template_data = db_api.get_template_data_storage(node_uuid)
+        if not (template_sys and template_data):
+            return None, None
+        sys_path = os.path.join(template_sys.path, 'instances')
+        data_path = os.path.join(template_data.path, 'datas')
+        return {"path": sys_path, "uuid": template_sys.uuid, 'free': template_sys.free}, \
+               {"path": data_path, "uuid": template_data.uuid, 'free': template_data.free}
 
     def education_group(self, data):
         logger.info("get data: {}".format(data))
@@ -65,6 +85,30 @@ class VoiTerminalController(object):
         }
         return build_result("Success", ret)
 
+    def education_config_groups(self):
+        """
+        获取所有组的ip段信息
+        {
+            "code": 0,
+            "msg": "success"
+            "data": {
+                "groups": {
+                    "uuid": ["ips"]
+                }
+            }
+        }
+        :return:
+        """
+        groups_dict = dict()
+        edu_groups = db_api.get_item_with_all(models.YzyVoiGroup, {"group_type": constants.EDUCATION_DESKTOP})
+        for group in edu_groups:
+            start_ip = group.start_ip
+            end_ip = group.end_ip
+            ips = find_ips(start_ip, end_ip)
+            groups_dict.update({group.uuid: ips})
+        logger.info("terminal desktop group dict: %s"% groups_dict)
+        return build_result("Success", data={"groups": groups_dict})
+
     def terminal_desktop_bind(self, data):
         logger.info("terminal desktop bind data: {}".format(data))
         try:
@@ -86,8 +130,132 @@ class VoiTerminalController(object):
             logger.error("", exc_info=True)
             return build_result("OtherError")
 
-    @single_lock
+    # @single_lock
     def create_terminal_desktop_bind(self, data):
+        """
+            'group_uuid','terminal_uuid','terminal_id','mac',
+            'ip','mask','gateway','dns1','dns2','is_dhcp',
+            {'group_uuid': 'a0cd32c9-9502-4ddc-b7a2-115203e4df0c',
+            'terminal_uuid': '891fa480-8f9b-4d25-8df3-a59798e302c4',
+            'terminal_id': 210, 'mac': 'E4:3A:6E:35:5C:A4', 'ip': '10.100.20.150', 'mask': '255.255.255.0',
+            'gateway': '10.100.20.254', 'dns1': '10.10.0.2', 'dns2': '', 'is_dhcp': 1}
+        """
+        logger.info("create terminal desktop bind data: {}".format(data))
+        try:
+            terminal_uuid = data.get("terminal_uuid", "")
+            terminal_id = data.get("terminal_id", "")
+            group_uuid = data.get("group_uuid", "")
+            terminal_mac = data.get("mac", "")
+            bind_info = {}
+            # group_uuid != input group_uuid, then delete all old data
+            with redis_lock.Lock(self._redis.rds, 'create_terminal_desktop_bind_lock', 2):
+                db_api.delete_voi_terminal_desktops(group_uuid, terminal_uuid)
+                # get all desktop groups
+                qry_desktop_groups = db_api.get_item_with_all(models.YzyVoiDesktop, {"group_uuid": group_uuid})
+                # 查找所有该终端、桌面组对应关系
+                terminal_desktop_relations = db_api.get_item_with_all(models.YzyVoiTerminalToDesktops,
+                                                                      {"terminal_uuid" : terminal_uuid})
+                for qry in qry_desktop_groups:
+                    desktop_group_uuid = qry.uuid
+                    # one (desktop_group_uuid, terminal_id) only one row
+                    # qry_exists = db_api.get_item_with_first(models.YzyVoiTerminalToDesktops,
+                    #                                         {"desktop_group_uuid": desktop_group_uuid,
+                    #                                          "terminal_uuid": terminal_uuid})
+                    relation_exists = False
+                    for relation in terminal_desktop_relations:
+                        if relation.desktop_group_uuid == desktop_group_uuid:
+                            relation_exists = True
+                            break
+
+                    if relation_exists:
+                        logger.info('continue: {}'.format(terminal_mac))
+                        continue
+
+                    logger.info('desktop_group_uuid: {}, qry.ip_detail: {}'.format(desktop_group_uuid, qry.ip_detail))
+
+                    if bool(qry.use_bottom_ip):
+                        logger.info('desktop_group_uuid: {}, qry.use_bottom_ip: {}'.format(desktop_group_uuid,
+                                                                                           qry.use_bottom_ip))
+                        desktop_ip_info = {
+                            "desktop_is_dhcp": data.get("is_dhcp", ""),
+                            "desktop_ip": data.get("ip", ""),
+                            "desktop_mask": data.get("mask", ""),
+                            "desktop_gateway": data.get("gateway", ""),
+                            "desktop_dns1": data.get("dns1", ""),
+                            "desktop_dns2": data.get("dns2", ""),
+                        }
+                    else:
+                        desktop_is_dhcp = 0
+                        if qry.ip_detail:
+                            ip_detail = json.loads(qry.ip_detail)
+                            desktop_is_dhcp = int(ip_detail.get("auto", True))
+                            desktop_start_ip = ip_detail.get("start_ip", "")
+                            desktop_mask = ip_detail.get("netmask", "")
+                            desktop_gateway = ip_detail.get("gateway", "")
+                            desktop_dns1 = ip_detail.get("dns_master", "")
+                            desktop_dns2 = ip_detail.get("dns_slave", "")
+
+                        if desktop_is_dhcp:
+                            logger.info('desktop_group_uuid: {}, desktop_is_dhcp: {}'.format(desktop_group_uuid,
+                                                                                               desktop_is_dhcp))
+                            desktop_ip_info = {
+                                "desktop_is_dhcp": 1,
+                                "desktop_ip": "",
+                                "desktop_mask": "",
+                                "desktop_gateway": "",
+                                "desktop_dns1": "",
+                                "desktop_dns2": "",
+                            }
+                        else:
+                            logger.info('desktop_group_uuid: {}, static ip'.format(desktop_group_uuid))
+                            # get ip pool use start_ip and netmask, filter yzy_voi_terminal_desktops ips, get least ip
+                            netmask_bits = netaddr.IPAddress(desktop_mask).netmask_bits()
+                            network = ipaddress.ip_interface(desktop_start_ip + '/' + str(netmask_bits)).network
+                            original_ip_pool = [x for x in network.hosts() if x >= ipaddress.IPv4Address(desktop_start_ip)]
+                            # get used ip in this desktop_group_uuid
+
+                            # with redis_lock.Lock(self._redis.rds, 'create_terminal_desktop_bind_lock', 2):
+                            qry_ips = db_api.get_item_with_all(models.YzyVoiTerminalToDesktops,
+                                                               {"desktop_group_uuid": desktop_group_uuid})
+                            used_ip_pool = [ipaddress.IPv4Address(qry.desktop_ip) for qry in qry_ips]
+                            available_ip_pool = [ip for ip in original_ip_pool if ip not in used_ip_pool]
+                            if available_ip_pool:
+                                desktop_ip = min(available_ip_pool).compressed
+                                desktop_ip_info = {
+                                    "desktop_is_dhcp": 0,
+                                    "desktop_ip": desktop_ip,
+                                    "desktop_mask": desktop_mask,
+                                    "desktop_gateway": desktop_gateway,
+                                    "desktop_dns1": desktop_dns1,
+                                    "desktop_dns2": desktop_dns2,
+                                }
+                            else:  # use use_bottom_ip
+                                logger.info('desktop_group_uuid: {}, no availabel_ip'.format(desktop_group_uuid))
+                                desktop_ip_info = {
+                                    "desktop_is_dhcp": data.get("is_dhcp", ""),
+                                    "desktop_ip": data.get("ip", ""),
+                                    "desktop_mask": data.get("mask", ""),
+                                    "desktop_gateway": data.get("gateway", ""),
+                                    "desktop_dns1": data.get("dns1", ""),
+                                    "desktop_dns2": data.get("dns2", ""),
+                                }
+                    bind_info = {
+                        "uuid": create_uuid(),
+                        "group_uuid": group_uuid,
+                        "terminal_uuid": terminal_uuid,
+                        "desktop_group_uuid": desktop_group_uuid,
+                        "terminal_mac": terminal_mac,
+                    }
+                    bind_info.update(desktop_ip_info)
+                    db_api.create_voi_terminal_desktop_bind(bind_info)
+                logger.info("terminal desktop bind data: {} success".format(bind_info))
+                return build_result("Success")
+        except Exception as e:
+            logger.error("", exc_info=True)
+            return build_result("OtherError")
+
+    @single_lock
+    def create_terminal_desktop_bind_bak(self, data):
         """
             'group_uuid','terminal_uuid','terminal_id','mac',
             'ip','mask','gateway','dns1','dns2','is_dhcp',
@@ -103,6 +271,8 @@ class VoiTerminalController(object):
             db_api.delete_voi_terminal_desktops(group_uuid, terminal_uuid)
             # get all desktop groups
             qry_desktop_groups = db_api.get_item_with_all(models.YzyVoiDesktop, {"group_uuid": group_uuid})
+            # 查找所有该终端、桌面组对应关系
+
             for qry in qry_desktop_groups:
                 desktop_group_uuid = qry.uuid
                 # one (desktop_group_uuid, terminal_id) only one row
@@ -136,7 +306,7 @@ class VoiTerminalController(object):
                     }
                 elif desktop_is_dhcp:
                     logger.info('desktop_group_uuid: {}, desktop_is_dhcp: {}'.format(desktop_group_uuid,
-                                                                                       desktop_is_dhcp))
+                                                                                     desktop_is_dhcp))
                     desktop_ip_info = {
                         "desktop_is_dhcp": 1,
                         "desktop_ip": "",
@@ -388,10 +558,10 @@ class VoiTerminalController(object):
             # disk_uuid = create_uuid()
             version = 0
             node = db_api.get_controller_node()
-            sys_base, data_base = self._get_template_storage_path()
+            sys_base, data_base = self._get_template_storage()
             disk_info = dict()
             disk_info["uuid"] = create_uuid()
-            disk_info["base_path"] = sys_base
+            disk_info["base_path"] = sys_base['path']
             disk_info["size"] = data["disk_size"]
             command_data = {
                 "command": "create_share",
@@ -418,7 +588,7 @@ class VoiTerminalController(object):
             db_api.create_voi_terminal_share(share_disk)
             # todo 生成bt种子
             # 生成种子文件
-            task = Thread(target=self.create_share_disk_torrent, args=(disk_info,version))
+            task = Thread(target=self.create_share_disk_torrent, args=(disk_info, version))
             task.start()
             logger.info("create terminal voi share disk data: {} success".format(share_disk))
             return build_result("Success", {"disk": share_disk})
@@ -460,11 +630,11 @@ class VoiTerminalController(object):
             # disk_uuid = create_uuid()
             version = 0
             disk_uuid = data["uuid"]
-            sys_base, data_base = self._get_template_storage_path()
+            sys_base, data_base = self._get_template_storage()
             share_disk = db_api.get_item_with_first(models.YzyVoiTerminalShareDisk, {"uuid": disk_uuid})
             disk_info = dict()
             disk_info["uuid"] = share_disk.uuid
-            disk_info["base_path"] = sys_base
+            disk_info["base_path"] = sys_base['path']
             disk_info["size"] = data["disk_size"]
             # 判断是否大小有更新
             if data["disk_size"] != share_disk.disk_size:
@@ -477,7 +647,7 @@ class VoiTerminalController(object):
                     "data": {
                         "disk_info": {
                             "uuid": share_disk.uuid,
-                            "base_path": sys_base,
+                            "base_path": sys_base['path'],
                         },
                         "version": version
                     }
@@ -500,6 +670,8 @@ class VoiTerminalController(object):
                     logger.error("terminal share disk update fail, create new fail")
                     return build_result("ShareDiskUpdateFail")
                 share_disk.disk_size = data["disk_size"]
+                share_disk.version += 1
+
             # todo 维护桌面组的绑定关系
             # import pdb; pdb.set_trace()
             desktops = db_api.get_item_with_all(models.YzyVoiDesktop, {"group_uuid": share_disk.group_uuid})
@@ -511,7 +683,7 @@ class VoiTerminalController(object):
                 for bind in desktop_binds:
                     if desktop["uuid"] == bind.desktop_uuid:
                         # is_exist = True
-                        if not desktop["choice"]:
+                        if not int(desktop.get("choice", 0)):
                             bind.soft_delete()
                         copy_share_desktops.remove(desktop)
             insert_binds = list()
@@ -539,6 +711,27 @@ class VoiTerminalController(object):
             task = Thread(target=self.create_share_disk_torrent, args=(disk_info, version))
             task.start()
             logger.info("update terminal voi share disk data: {} success".format(share_disk))
+            return build_result("Success")
+        except Exception as e:
+            logger.error("", exc_info=True)
+            return build_result("OtherError")
+
+    def update_desktop_sent_flag(self, data):
+        logger.info("input data: {}".format(data))
+        try:
+            terminal_mac = data.get("mac")
+            sys_uuids = data.get("sys_disk_uuids").split(',')
+            group_uuid = data.get("group_uuid", "")
+            for uuid in sys_uuids:
+                disk = db_api.get_item_with_first(models.YzyVoiDeviceInfo, {"uuid": uuid, "type": "system"})
+                if disk and disk.instance_uuid:
+                    desktop_group = db_api.get_item_with_first(models.YzyVoiDesktop,
+                                                    {"template_uuid": disk.instance_uuid, "group_uuid": group_uuid})
+                    if desktop_group and desktop_group.uuid:
+                        db_api.update_voi_terminal_desktop_bind(desktop_group.uuid, terminal_mac,
+                                                                {"desktop_is_sent": 1})
+                        logger.info("update yzy_voi_terminal_to_desktops, mac: {}, dsk_grp_uuid: {}".format(
+                            terminal_mac, desktop_group.uuid))
             return build_result("Success")
         except Exception as e:
             logger.error("", exc_info=True)

@@ -1,55 +1,33 @@
-#-*- coding:UTF-8 -*-
-import os
-
-import operator
-import string
 import logging
-import hashlib
 import threading
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSetMixin
 from django.db.models import Q
 from django.core.exceptions import ObjectDoesNotExist
-from .models import *
-from .serializers import *
-from web_manage.common.utils import JSONResponse, YzyWebPagination, create_uuid
-
-from web_manage.common.http import server_post
-
-from django.conf import settings
-# from dashboard.utils.JSONHttpResponse import JSONHttpResponse
-# from vec_dashboard_auth.decorator import login_required
-# from vec_client import client as vecclient
-# from vec_client.vec_log import SaveLog
-
-from rest_framework.response import Response
 from rest_framework import status
-
-from django.conf import settings
-from django.core.cache import cache
-
+from collections import defaultdict
 from django.utils.encoding import escape_uri_path
 from django.http import Http404, FileResponse, HttpResponseServerError
 
-from .models import *
 from .serializers import *
-from web_manage.common.log import operation_record
-from web_manage.common.utils import JSONResponse, YzyWebPagination, create_uuid, YzyAuthentication, YzyPermission, \
-                                get_error_result
+from web_manage.common.utils import JSONResponse, YzyWebPagination, get_error_result
 from web_manage.common.http import server_post
 from web_manage.common.general_query import GeneralQuery
 from web_manage.common import constants
 from web_manage.yzy_edu_desktop_mgr.serializers import NodeTemplateSerializer
 from web_manage.yzy_edu_desktop_mgr import models as education_model
-from web_manage.yzy_user_desktop_mgr import models as personal_model
 from .resource_manager.resource_pool_manager import resource_pool_mgr
 from .resource_manager.node_manager import node_mgr
 from .resource_manager.base_image_manager import base_image_mgr, iso_mgr
 from .resource_manager.network_manager import network_mgr, subnet_mgr
 from .resource_manager.virtual_switch_manager import virtual_switch_mgr
+from .resource_manager.remote_storage_manager import remote_storage_mgr
+from web_manage.yzy_system_mgr.models import YzyTask
+from web_manage.common.utils import create_uuid
 
 
 logger = logging.getLogger(__name__)
+
 
 class Common(ViewSetMixin, APIView):
     def check_name_existence(self, request, *args, **kwargs):
@@ -112,9 +90,14 @@ class ControllerNode(ViewSetMixin, APIView):
     """
     def list(self, request, *args, **kwargs):
         try:
+            if request.GET.get("backup", None):
+                type_list = [constants.ROLE_SLAVE_AND_COMPUTE, constants.ROLE_SLAVE]
+            else:
+                type_list = [constants.ROLE_MASTER_AND_COMPUTE, constants.ROLE_MASTER]
+
             page = YzyWebPagination()
             query_set = YzyNodes.objects.filter(deleted=False,
-                                                type__in=[constants.ROLE_MASTER_AND_COMPUTE, constants.ROLE_MASTER])
+                                                type__in=type_list)
             controller_nodes = page.paginate_queryset(queryset=query_set, request=request, view=self)
             ser = YzyNodesSerializer(instance=controller_nodes, many=True, context={'request': request})
             return page.get_paginated_response(ser.data)
@@ -155,6 +138,60 @@ class ResourcePool(ViewSetMixin, APIView):
             return page.get_paginated_response(ser.data)
         except Exception as e:
             return HttpResponseServerError()
+
+    def storage_list(self, request, *args, **kwargs):
+        query = GeneralQuery()
+        query_dict = query.get_query_kwargs(request)
+        return query.model_query(request, YzyResourcePools, YzyStoragesSerializer, query_dict)
+
+    def update_storages(self, request, *args, **kwargs):
+        """
+        :param request:
+            {
+                1: "/opt/slow",
+                2: "/opt/slow",
+                3: "/opt/slow",
+                4: "/opt/slow"
+            }
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        try:
+            data = request.data
+            config = dict()
+            storages = dict()
+            if data.get('resource_pool_uuid'):
+                config['resource_pool_uuid'] = data['resource_pool_uuid']
+            if data.get('type') and int(data['type']): # 远端存储
+                remote_storage = YzyRemoteStorage.objects.filter(deleted=False, uuid=data['remote_storage_uuid']).first()
+                remote_storage.role = '1,2,3,4'
+                remote_storage.save()
+                storages[constants.NFS_MOUNT_POINT_PREFIX + remote_storage.name] = '1,2,3,4'
+            else: # 本地存储
+                if str(constants.TEMPLATE_SYS) not in data.keys() or str(constants.TEMPLATE_DATA) not in data.keys() \
+                        or str(constants.INSTANCE_SYS) not in data.keys() or str(constants.INSTANCE_DATA) not in data.keys():
+                    ret = get_error_result("StorageRoleMissing")
+                    return JSONResponse(ret)
+                storage_list = defaultdict(list)
+                for k, v in data.items():
+                    if k not in ['type', 'resource_pool_uuid']:
+                        storage_list[v].append(k)
+                for k, v in storage_list.items():
+                    storages[k] = ",".join(v)
+                if data.get('resource_pool_uuid'):
+                    remote_storage = YzyRemoteStorage.objects.filter(deleted=False,
+                                                                     allocated_to=data['resource_pool_uuid']).first()
+                    remote_storage.role = None
+                    remote_storage.save()
+            config['storages'] = storages
+            ret = server_post("/api/v1/resource_pool/storages", config)
+            logger.info("update storages return:%s", ret)
+            return JSONResponse(ret)
+        except Exception as e:
+            logger.exception("update storages error:%s", e)
+            ret = get_error_result("OtherError")
+            return JSONResponse(ret)
 
     def create(self, request, *args, **kwargs):
         ret = resource_pool_mgr.create_resource_pool(request, request.data)
@@ -279,7 +316,7 @@ class Node(ViewSetMixin, APIView):
         except Exception as e:
             return HttpResponseServerError()
 
-    def check_ip(self, request, *args, **kwargs):
+    def check_node_ip(self, request, *args, **kwargs):
         try:
             ip = request.GET.get('ip', None)
             if ip:
@@ -314,6 +351,58 @@ class Node(ViewSetMixin, APIView):
                 return JSONResponse(get_error_result("ParamError"))
         except Exception as e:
             return HttpResponseServerError()
+
+    def ping_ip(self, request, *args, **kwargs):
+        try:
+            ip = request.GET.get('ip', None)
+            if ip:
+                ret = node_mgr.ping_ip(ip)
+                return JSONResponse(ret)
+            else:
+                return JSONResponse(get_error_result("ParamError"))
+        except Exception as e:
+            return HttpResponseServerError()
+
+    def get_devices(self, request, *args, **kwargs):
+        node_uuid = kwargs.get("node_uuid")
+        ret = server_post("/node/disk_part", {"node_uuid": node_uuid})
+        if ret.get('code') != 0:
+            logger.error("get disk part info error:%s", ret)
+        return JSONResponse(ret)
+
+    def vg_detail(self, request, *args, **kwargs):
+        node_uuid = kwargs.get("node_uuid")
+        ret = server_post("/node/vg_detail", {"node_uuid": node_uuid})
+        if ret.get('code') != 0:
+            logger.error("get vg info error:%s", ret)
+        return JSONResponse(ret)
+
+    def extend_vg(self, request, *args, **kwargs):
+        node_uuid = kwargs.get("node_uuid")
+        param = request.data
+        param['node_uuid'] = node_uuid
+        ret = server_post("/node/extend_vg", param)
+        if ret.get('code') != 0:
+            logger.error("extend vg error:%s", ret)
+        return JSONResponse(ret)
+
+    def extend_lv(self, request, *args, **kwargs):
+        node_uuid = kwargs.get("node_uuid")
+        param = request.data
+        param['node_uuid'] = node_uuid
+        ret = server_post("/node/extend_lv", param)
+        if ret.get('code') != 0:
+            logger.error("extend lv error:%s", ret)
+        return JSONResponse(ret)
+
+    def create_lv(self, request, *args, **kwargs):
+        node_uuid = kwargs.get("node_uuid")
+        param = request.data
+        param['node_uuid'] = node_uuid
+        ret = server_post("/node/create_lv", param)
+        if ret.get('code') != 0:
+            logger.error("create lv error:%s", ret)
+        return JSONResponse(ret)
 
 
 class NodeNic(ViewSetMixin, APIView):
@@ -360,6 +449,17 @@ class NodeNic(ViewSetMixin, APIView):
             nic_obj = YzyNodeNetworkInfo.objects.filter(deleted=False).filter(uuid=nic_uuid).first()
             if not nic_obj:
                 return JSONResponse(get_error_result("NodeNICNotExist"))
+
+            # 已启用HA的网卡不能添加编辑网关
+            ha_nic_uuids = list()
+            ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+            if nic_obj.uuid in ha_nic_uuids:
+                return JSONResponse(get_error_result("HaNicEditIPError"))
+
             data = request.data
             data['node_uuid'] = node_obj.uuid
             data['node_ip'] = node_obj.ip
@@ -379,8 +479,14 @@ class NodeService(ViewSetMixin, APIView):
     """
     def list(self, request, *args, **kwargs):
         node_uuid = kwargs.get("node_uuid")
+        # 只展示该节点应有的服务
+        node_obj = YzyNodes.objects.filter(deleted=False, uuid=node_uuid).first()
+        if node_obj.type in [constants.ROLE_MASTER, constants.ROLE_MASTER_AND_COMPUTE]:
+            services = constants.MASTER_SERVICE
+        else:
+            services = constants.COMPUTE_SERVICE
         page = YzyWebPagination()
-        query_set = YzyNodeServices.objects.filter(deleted=False, node=node_uuid)
+        query_set = YzyNodeServices.objects.filter(deleted=False, node=node_uuid, name__in=services)
         services = page.paginate_queryset(queryset=query_set, request=request, view=self)
         ser = YzyNodeServicesSerializer(instance=services, many=True, context={'request': request})
         return page.get_paginated_response(ser.data)
@@ -390,6 +496,7 @@ class NodeService(ViewSetMixin, APIView):
         service_uuid = kwargs.get("service_uuid")
         ret = node_mgr.restart_service(node_uuid, service_uuid)
         return JSONResponse(ret)
+
 
 class BaseImage(ViewSetMixin, APIView):
     """
@@ -407,6 +514,9 @@ class BaseImage(ViewSetMixin, APIView):
             return HttpResponseServerError()
 
     def upload(self, request, *args, **kwargs):
+        image_name = create_uuid()
+        uuid = create_uuid()
+        YzyTask.objects.create(uuid=uuid, task_uuid=image_name, name="上传镜像", type=1, status=constants.TASK_RUNNING)
         resource_pool_uuid = kwargs.get("resource_pool_uuid")
         try:
             resource_pool = YzyResourcePools.objects.get(uuid=resource_pool_uuid)
@@ -417,7 +527,7 @@ class BaseImage(ViewSetMixin, APIView):
         name = request.data.get("name", None)
         os_type = request.data.get("os_type", None)
         logger.info("go to upload func")
-        return base_image_mgr.upload(file_obj, name, os_type, resource_pool, request)
+        return base_image_mgr.upload(file_obj, name, os_type, resource_pool, request, image_name)
 
     def publish(self, request, *args, **kwargs):
         data = request.data.get("data")
@@ -444,7 +554,6 @@ class BaseImage(ViewSetMixin, APIView):
                 logger.error("update Base Image file: %s is exist" % name)
                 return JSONResponse(get_error_result("ISOFileExistError"))
             base_image = YzyBaseImages.objects.get(uuid=uuid)
-            
             ret = base_image_mgr.update(request.data, base_image)
             return JSONResponse(ret)
         except Exception as e:
@@ -870,3 +979,169 @@ class NodeBond(ViewSetMixin, APIView):
     #     ip_info_uuid = kwargs.get("ip_info_uuid")
     #     ret = node_mgr.update_ip_node(request.data, node_uuid, nic_uuid, ip_info_uuid)
     #     return JSONResponse(ret)
+
+
+class HaConfig(ViewSetMixin, APIView):
+    def enable_ha(self, request, *args, **kwargs):
+        master_uuid = request.data.get("master_uuid", None)
+        backup_uuid = request.data.get("backup_uuid", None)
+        sensitivity = request.data.get("sensitivity", 60)
+        quorum_ip = request.data.get("quorum_ip", None)
+        new_master_ip = request.data.get("new_master_ip", None)
+        backup_pwd = request.data.get("backup_pwd", None)
+        # master_ip = request.data.get("master_ip", None)
+        # master_nic = request.data.get("master_nic", None)
+        if not master_uuid or not backup_uuid or not quorum_ip or not new_master_ip or not backup_pwd or not isinstance(sensitivity, int):
+            ret = get_error_result("ParameterError")
+        else:
+            ret = node_mgr.enable_ha(master_uuid, backup_uuid, new_master_ip, sensitivity, quorum_ip, backup_pwd)
+        return JSONResponse(ret)
+
+    def list(self, request, *args, **kwargs):
+        ha_info_obj = YzyHaInfo.objects.filter(deleted=False).first()
+        if not ha_info_obj:
+            ret = get_error_result("Success", data=None)
+        else:
+            ser = YzyHaInfoSerializer(instance=ha_info_obj, many=False, context={'request': request})
+            ret = ser.data
+        return JSONResponse(ret)
+
+    def ha_status(self, request, *args, **kwargs):
+        ha_info_uuid = kwargs.get("ha_info_uuid", None)
+        if not ha_info_uuid:
+            ret = get_error_result("ParameterError")
+        else:
+            ret = node_mgr.ha_status(ha_info_uuid)
+        return JSONResponse(ret)
+
+    def switch_master(self, request, *args, **kwargs):
+        ha_info_uuid = kwargs.get("ha_info_uuid", None)
+        new_vip_host_ip = request.data.get("new_vip_host_ip", None)
+        if not ha_info_uuid or not new_vip_host_ip:
+            ret = get_error_result("ParameterError")
+        else:
+            ret = node_mgr.switch_ha_master(ha_info_uuid, new_vip_host_ip)
+        return JSONResponse(ret)
+
+    def disable_ha(self, request, *args, **kwargs):
+        ha_info_uuid = kwargs.get("ha_info_uuid", None)
+        if not ha_info_uuid:
+            ret = get_error_result("ParameterError")
+        else:
+            ret = node_mgr.disable_ha(ha_info_uuid)
+        return JSONResponse(ret)
+
+    def ha_data_sync_network(self, request, *args, **kwargs):
+        master_node_obj = YzyNodes.objects.filter(deleted=False,
+                                type__in=[constants.ROLE_MASTER_AND_COMPUTE, constants.ROLE_MASTER]).first()
+        master_ip = master_node_obj.ip
+        master_ip_obj = YzyInterfaceIp.objects.filter(deleted=False, ip=master_ip).first()
+        master_nic = master_ip_obj.name
+
+        ret = {
+            "ha_data_sync_network": "%s(%s)" % (master_nic, master_ip),
+            "manage_gateway": master_ip_obj.gateway
+        }
+        return JSONResponse(ret)
+
+
+class VersionView(APIView):
+    """登录认证"""
+    authentication_classes = []
+
+    def get(self, request, *args, **kwargs):
+        return JSONResponse(server_post("/api/v1/controller/check_ha_done", {}))
+
+
+class SystemRunningTimeView(APIView):
+    """节点系统运行时间"""
+
+    def get(self, request, *args, **kwargs):
+        logger.info("get system run time")
+        node_uuid = request.GET.get("uuid", "")
+        if not node_uuid:
+            return JSONResponse(get_error_result("ParameterError"))
+        data = {
+            "node_uuid": node_uuid
+        }
+        url = "/api/v1/controller/get_system_time"
+        ret = server_post(url, data=data)
+        return JSONResponse(ret)
+
+
+class RemoteStorageView(ViewSetMixin, APIView):
+
+    def list(self, request, *args, **kwargs):
+        try:
+            page = YzyWebPagination()
+            group = request.GET.get('group', 'all')
+            if group == 'all':
+                query_set = YzyRemoteStorage.objects.filter(deleted=False)
+            elif group == 'allocated':
+                query_set = YzyRemoteStorage.objects.filter(deleted=False).filter(allocated=1)
+            elif group == 'unallocated':
+                query_set = YzyRemoteStorage.objects.filter(deleted=False).filter(allocated=0)
+            else:
+                return JSONResponse(get_error_result("ParameterError"))
+            remote_storages = page.paginate_queryset(queryset=query_set, request=request, view=self)
+            ser = YzyRemoteStorageSerializer(instance=remote_storages, many=True, context={'request': request})
+            return page.get_paginated_response(ser.data)
+        except Exception as e:
+            return HttpResponseServerError()
+
+    def create(self, request, *args, **kwargs):
+        _data = request.data
+        ret = remote_storage_mgr.create_remote_storage(_data)
+        return JSONResponse(ret)
+
+    def delete(self, request, *args, **kwargs):
+        uuid = request.data.get("uuid")
+        ret = remote_storage_mgr.delete_remote_storage(uuid)
+        return JSONResponse(ret)
+
+    def allocate(self, request, *args, **kwargs):
+        remote_storage_uuid = kwargs.get("remote_storage_uuid")
+        resource_pool_uuid = request.data.get("uuid")
+        ret = remote_storage_mgr.allocate_remote_storage(remote_storage_uuid, resource_pool_uuid)
+        return JSONResponse(ret)
+
+    def reclaim(self, request, *args, **kwargs):
+        remote_storage_uuid = kwargs.get("remote_storage_uuid")
+        ret = remote_storage_mgr.reclaim_remote_storage(remote_storage_uuid)
+        return JSONResponse(ret)
+
+    def list_nfs_mount_point(self, request, *args, **kwargs):
+        nfs_server_ip = request.GET.get('nfs_server_ip', None)
+        ret = remote_storage_mgr.list_nfs_mount_point(nfs_server_ip)
+        return JSONResponse(ret)
+
+    def resource_pool_remote_storages(self, request, *args, **kwargs):
+        resource_pool_uuid = request.GET.get('resource_pool_uuid', None)
+        res = YzyRemoteStorage.objects.filter(deleted=False, allocated_to=resource_pool_uuid)
+        ret = list()
+        for r in res:
+            remote_storage = {
+                'uuid': r.uuid,
+                'name': r.name
+            }
+            ret.append(remote_storage)
+        return JSONResponse(ret)
+
+    def resource_pool_local_storages(self, request, *args, **kwargs):
+        resource_pool_uuid = request.GET.get('resource_pool_uuid', None)
+        nodes = YzyNodes.objects.filter(deleted=False, resource_pool_id=resource_pool_uuid).all()
+        if not nodes:
+            return JSONResponse([])
+        storages = YzyNodeStorages.objects.filter(deleted=False, node_id=nodes[0].uuid)
+        local_storages = list()
+        for storage in storages:
+            if '/opt/nfs' not in storage.path:
+                storage_dict = {
+                    'uuid': storage.uuid,
+                    'path': storage.path,
+                    'role': storage.role,
+                    'total': round(storage.total/1024/1024/1024, 2),
+                    'available': round(storage.free/1024/1024/1024, 2),
+                }
+                local_storages.append(storage_dict)
+        return JSONResponse(local_storages)

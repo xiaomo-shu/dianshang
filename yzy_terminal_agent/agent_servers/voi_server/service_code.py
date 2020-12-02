@@ -28,6 +28,10 @@ service_code_name = {
     1023: "ssh_upload_desktop", 
     1024: "update_desktop_group_info",
     1025: "cancel_send_desktop",
+    1026: "cancel_p_to_v",      # 取消p2v
+
+    1030: "terminal_upgrade",
+
 
     9000: "heartbeat",
     9001: "terminal_login",
@@ -56,7 +60,14 @@ service_code_name = {
 
     9022: "diff_disk_upload",       # 差分盘上传磁盘
     9023: "diff_disk_download",
-    9024: "desktop_login",  # 上报桌面下载
+    9024: "desktop_login",          # 上报桌面下载
+    9025: "bt_task_state",         # bt任务状态
+    9026: "put_desktop_group_list",
+    9027: "bt_upload_state",
+    9028: "query_teach_pc",     #查询教师机
+    9029: "update_performance",    # 上报终端性能信息
+
+    9999: "upload_log"             # 终端日志上传
 }
 
 name_service_code = {v: k for k, v in service_code_name.items()}

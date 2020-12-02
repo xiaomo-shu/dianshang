@@ -24,4 +24,6 @@ from yzy_server.apis.v1.views.voi_group import *
 from yzy_server.apis.v1.views.voi_desktop import *
 from yzy_server.apis.v1.views.voi_terminal import *
 from yzy_server.apis.v1.views.monitor import *
+from yzy_server.apis.v1.views.course_schedule import *
+from yzy_server.apis.v1.views.remote_storage import *
 

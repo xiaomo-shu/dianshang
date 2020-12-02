@@ -145,6 +145,10 @@ def get_nic_ip_by_uuid(uuid, default=False):
     return nic_ip
 
 
+def get_nic_ip_by_ip(ip):
+    return model_query(YzyInterfaceIp).filter_by(ip=ip).first()
+
+
 def get_interface_by_network(network_uuid, node_uuid):
     net = model_query(YzyNetworks, YzyNodeNetworkInfo.nic).\
         join(YzyVswitchUplink, YzyNetworks.switch_uuid == YzyVswitchUplink.vs_uuid).\

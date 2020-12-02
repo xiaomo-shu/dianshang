@@ -1797,3 +1797,87 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
     "option": "admin_user"
     }
     ```
+  
+  
+### 31、任务信息记录查询
+
+* URL
+
+  `/system/task_info?search_type=all&status=running&time_frame=week`
+  
+* Method 
+  
+  **GET** 请求，**body** 参数使用 **json**格式
+  
+* Returns
+
+  | Name       | Type   | Description |
+  | -----------| ------ | ----------- |
+  | code       | int    | 返回码         |
+  | msg        | int    | 请求返回具体信息       |
+  | data       | object | 根据需求返回相应的数据       |
+  
+  - 示例：
+  ```json
+      {
+      "code": 0,
+      "msg": "成功",
+      "data": [
+        {
+          "name": "桌面组批量关机",
+          "status": "complete",
+          "created_at": "2020-10-16 14:47:00"
+        },
+        {
+          "name": "桌面组批量开机",
+          "status": "complete",
+          "created_at": "2020-10-16 14:41:00"
+        },
+        {
+          "name": "桌面定时开关机",
+          "status": "queue",
+          "created_at": "2020-10-16 14:39:56"
+        },
+        {
+          "name": "桌面组批量关机",
+          "status": "complete",
+          "created_at": "2020-10-16 14:02:00"
+        },
+        {
+          "name": "桌面定时开关机",
+          "status": "complete",
+          "created_at": "2020-10-16 14:00:29"
+        }
+      ]
+    }
+  ```
+  
+
+
+### 32 服务器时间修改
+
+* URL
+  `api/v1.0/system/strategy/system_time` 
+  
+* Method
+
+  **POST** 请求 **body** 参数使用 **json** 格式
+  
+* Parameters
+
+  | Name                | Type   | Description |
+  | --------------------| ------ | ----------- |
+  | date                | string |输入的日期时间 |
+  | time_zone           | string |选择的时区        |
+  | ntp_server          | string |需要同步的服务器地址|
+  | check               | bool   |是否勾选|
+  
+    - 示例：
+  ```json
+  {
+    "date": "2020-11-24 17:21:00",
+    "time_zone": "Asia/Shanghai",
+    "ntp_server": "cn.ntp.org.cn",
+    "check": "True"
+    }
+    ```

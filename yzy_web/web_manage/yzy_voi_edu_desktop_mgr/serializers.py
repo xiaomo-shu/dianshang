@@ -12,17 +12,32 @@ from . import models
 class VoiGroupSerializer(DateTimeFieldMix):
     terminal_count = serializers.SerializerMethodField(read_only=True)
     desktop_count = serializers.SerializerMethodField(read_only=True)
+    dhcp = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = models.YzyVoiGroup
-        fields = ('uuid', 'name', 'desc', 'start_ip', 'end_ip', 'enabled', 'terminal_count', 'desktop_count')
+        fields = ('uuid', 'name', 'desc', 'start_ip', 'end_ip', 'enabled', 'dhcp', 'terminal_count', 'desktop_count')
 
     def get_terminal_count(self, obj):
-        return 0
+        count = models.YzyVoiTerminal.objects.filter(deleted=False, group_uuid=obj.uuid).count()
+        return count
 
     def get_desktop_count(self, obj):
         count = models.YzyVoiDesktop.objects.filter(group=obj.uuid, deleted=False).count()
         return count
+
+    def get_dhcp(self, obj):
+        dhcp_conf = obj.dhcp
+        if not dhcp_conf:
+            return None
+        dhcp_conf_dict = json.loads(dhcp_conf)
+        start_ip = dhcp_conf_dict.get("start_ip")
+        end_ip = dhcp_conf_dict.get("end_ip")
+        gateway = dhcp_conf_dict.get("gateway")
+        netmask = dhcp_conf_dict.get("netmask")
+        if not (start_ip and end_ip and gateway and netmask):
+            return None
+        return json.loads(obj.dhcp)
 
 
 class VoiDesktopSerializer(DateTimeFieldMix):
@@ -39,8 +54,8 @@ class VoiDesktopSerializer(DateTimeFieldMix):
         model = models.YzyVoiDesktop
         fields = ('uuid', 'name', 'owner', 'template', 'template_name', 'template_status', 'group', 'group_name',
                   'sys_restore', 'data_restore', 'active', 'os_type', 'created_at', 'inactive_count',
-                  'active_count', 'default', 'show_info', 'auto_update', 'prefix', 'use_bottom_ip',
-                  'ip_detail', 'total_count')
+                  'active_count', 'default', 'show_info', 'auto_update', 'prefix', 'use_bottom_ip', 'sys_reserve_size',
+                  'data_reserve_size', 'ip_detail', 'total_count', 'diff_mode')
 
     def get_owner(self, obj):
         user = admin_model.YzyAdminUser.objects.filter(id=obj.owner_id, deleted=False).first()
@@ -66,6 +81,7 @@ class VoiDesktopSerializer(DateTimeFieldMix):
 
     def get_total_count(self, obj):
         count = 0
+        # count = models.YzyVoiTerminalToDesktops2.objects.filter(desktop_group_uuid=obj.uuid, deleted=False).count()
         return count
 
     def get_ip_detail(self, obj):

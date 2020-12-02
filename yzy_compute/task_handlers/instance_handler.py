@@ -63,23 +63,20 @@ class InstanceProcess(object):
                     {
                         'uuid': '2f110de8-78d8-11ea-ad5d-000c29e84b9c',
                         'dev': 'vda',
-                        'image_id': '47b2807a-78a6-11ea-8454-000c29e84b9c',
-                        'image_version': 1,
                         'boot_index': 0,
-                        'bus': 'virtio',
                         'type': 'disk',
-                        'base_path': '/opt/slow/instances',
+                        'disk_file': '',
+                        'backing_file': '',
                         'restore': 1
                     },
                     {
                         'uuid': '2f11114e-78d8-11ea-ad5d-000c29e84b9c',
                         'dev': 'vdb',
-                        'image_id': '47b363d2-78a6-11ea-8454-000c29e84b9c',
-                        'image_version': 1,
                         'boot_index': 1,
                         'bus': 'virtio',
                         'type': 'disk',
-                        'base_path': '/opt/slow/datas',
+                        'disk_file': '',
+                        'backing_file': '',
                         'restore': 1
                     }
                 ]
@@ -285,7 +282,7 @@ class InstanceProcess(object):
                 }
             }
         """
-        logging.info("InstanceHandler, stop task begin, data:%s", self.task)
+        logging.info("InstanceHandler, delete task begin, data:%s", self.task)
         instance = self.task['data']['instance']
         LibvirtDriver().delete_instance(instance)
 

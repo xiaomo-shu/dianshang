@@ -160,7 +160,7 @@ class TerminalUpgradePag(APIView):
 
     def get(self, request, *args, **kwargs):
         try:
-            upgrades = YzyTerminalUpgrade.objects.filter(deleted=False)
+            upgrades = YzyTerminalUpgrade.objects.filter(deleted=False).exclude(platform="VOI").all()
             ser = YzyTerminalUpgradeSerializer(instance=upgrades, many=True, context={'request': request})
             return JSONResponse(get_error_result("Success", ser.data))
         except Exception as e:

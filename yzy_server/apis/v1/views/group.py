@@ -62,7 +62,7 @@ class EducationGroupAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("group action %s failed:%s", action, e)
+            logger.exception("group action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -186,7 +186,7 @@ class GroupUserAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("group user action %s failed:%s", action, e)
+            logger.exception("group user action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

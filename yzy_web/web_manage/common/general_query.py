@@ -20,7 +20,7 @@ class GeneralQuery(object):
                 kwargs.pop('page_size')
             contain = kwargs.get('contain', None)
             logger.debug("table:%s, query conditions:%s", model._meta.db_table, kwargs)
-            # 默认模糊查询条件是and，如果需要使用or，则在外层组合好，通过contain字段传递进来
+            # 默认模糊查询条件是and，如n果需要使用or，则在外层组合好，通过contain字段传递进来
             if contain:
                 logger.debug("get contain query filter:%s", contain)
                 kwargs.pop('contain')
@@ -31,7 +31,7 @@ class GeneralQuery(object):
             ser = serializer(instance=instance, many=True, context={'request': request})
             return page.get_paginated_response(ser.data)
         except Exception as e:
-            logger.error("get all data from table:%s error:%s", model ._meta.db_table, e)
+            logger.error("get all data from table:%s error:%s", model._meta.db_table, e)
             raise e
 
     # def get_object_contain(self, request, model, serializer, **kwargs):
@@ -150,3 +150,4 @@ class GeneralQuery(object):
         except Exception as e:
             logger.error("get request failed:%s", e, exc_info=True)
             return param_error("SystemError")
+

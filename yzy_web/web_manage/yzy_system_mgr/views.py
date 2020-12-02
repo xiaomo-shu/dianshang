@@ -11,6 +11,8 @@ import tarfile
 import copy
 
 from rest_framework.views import APIView
+from django.db.models import Q
+from concurrent.futures import ThreadPoolExecutor
 from django.utils import timezone
 from django.utils.encoding import escape_uri_path
 from urllib.parse import quote
@@ -499,39 +501,48 @@ class ExportLogView(APIView):
         start_date = request.data.get('start_date', '')
         end_date = request.data.get('end_date', '')
         try:
-            ret = self.get_log_file(start_date, end_date)
+            return self.get_log_file(start_date, end_date)
         except Exception as e:
             logger.error("log pack fail:%s", e)
             ret = get_error_result("OtherError")
-        return ret
+        return JsonResponse(ret)
 
     def get_log_file(self, start_date, end_date):
-        try:
+        if start_date:
             start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+        if end_date:
             end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d")
-        except Exception as e:
-            ret = get_error_result("ParamError")
-            return JsonResponse(ret)
+        if not start_date and not end_date:
+            logger.error("start date and end data not exist: %s, %s", start_date, end_date)
+            return JsonResponse(get_error_result("ParameterError"))
         if not os.path.exists(constants.LOG_DOWN_PATH):
             os.makedirs(constants.LOG_DOWN_PATH)
+        log_files = os.listdir(constants.LOG_FILE_PATH)
+        c_log_files = copy.deepcopy(log_files)
+        for file in c_log_files:
+            end_str = file.split('.')[-1]
+            try:
+                log_date = datetime.datetime.strptime(end_str, "%Y-%m-%d")
+            except:
+                log_files.remove(file)
+                continue
+            if start_date and end_date:
+                if not (start_date <= log_date <= end_date):
+                    log_files.remove(file)
+            elif start_date or end_date:
+                if start_date and log_date != start_date:
+                    log_files.remove(file)
+                if end_date and log_date != end_date:
+                    log_files.remove(file)
+        if not log_files:
+            logger.error("the exported log file is empty: %s", log_files)
+            return JsonResponse(get_error_result("LogFileDoesNotExistError"))
         time_stamp = str(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
         name = "系统日志-" + time_stamp
         log_down_path = os.path.join(constants.LOG_DOWN_PATH, name)
         log_down_path = log_down_path + ".tar.gz"
         tar = tarfile.open(log_down_path, "w:gz")
         logger.info("open log down path %s success", log_down_path)
-        log_files = os.listdir(constants.LOG_FILE_PATH)
-        if start_date and end_date:
-            c_log_files = copy.deepcopy(log_files)
-            for file in c_log_files:
-                end_str = file.split('.')[-1]
-                try:
-                    log_date = datetime.datetime.strptime(end_str, "%Y-%m-%d")
-                except:
-                    log_files.remove(file)
-                    continue
-                if not (start_date <= log_date <= end_date):
-                    log_files.remove(file)
         for file in log_files:
             log_file = os.path.join(constants.LOG_FILE_PATH, file)
             if os.path.exists(log_file):
@@ -544,7 +555,20 @@ class ExportLogView(APIView):
         down_url = "http://%s:%s/api/v1.0/system/logs/export/?file=%s" % \
                    (host.ip, constants.WEB_DEFAULT_PORT, down_path)
         ret = get_error_result("Success", {"down_url": down_url})
+
+        # 删除系统日志时间超过一个星期以上的
+        self.delete_log_file()
         return JsonResponse(ret)
+
+    def delete_log_file(self):
+        logger.info("start delete expiration time log file")
+        expiration_time = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y%m%d%H%M%S")
+        log_files = os.listdir(constants.LOG_DOWN_PATH)
+        for file in log_files:
+            log_date = file.split('-')[1].split('.')[0]
+            if int(log_date) <= int(expiration_time):
+                file_path = os.path.join(constants.LOG_DOWN_PATH, file)
+                os.remove(file_path)
 
 
 class AuthView(APIView):
@@ -559,26 +583,40 @@ class AuthView(APIView):
             data = request.data
             sn = data['sn']
             org_name = data['org_name']
-            log_user = {
-                "id": request.user.id if request.user.id else 1,
-                "user_name": request.user.username,
-                "user_ip": request.META.get('HTTP_X_FORWARDED_FOR') if request.META.get('HTTP_X_FORWARDED_FOR')
-                else request.META.get("REMOTE_ADDR")
-            }
-            ret = LicenseManager().activation(sn, org_name, log_user)
+            ret = LicenseManager().activation(sn, org_name)
+            # log_user = {
+            #     "id": request.user.id if request.user.id else 1,
+            #     "user_name": request.user.username,
+            #     "user_ip": request.META.get('HTTP_X_FORWARDED_FOR') if request.META.get('HTTP_X_FORWARDED_FOR')
+            #     else request.META.get("REMOTE_ADDR")
+            # }
+            # ret = LicenseManager().activation(sn, org_name, log_user)
+            # if ret.get('code') == 0:
+            #     data = {
+            #         "sn": sn,
+            #         "organization": org_name
+            #     }
+            #     ser = YzyAuthSerializer(data=data, context={'request': request})
+            #     if ser.is_valid():
+            #         logger.info("save auth info to db")
+            #         ser.save()
+            #         return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
+            #     else:
+            #         ret = get_error_result("OtherError", data=ser.errors)
+            #         return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
+            return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
         except Exception as e:
             logger.error("activate license error:%s", e, exc_info=True)
-            ret = {"result": False}
-            return JsonResponse(ret, status=200,
-                                json_dumps_params={'ensure_ascii': False})
-        return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
+            # ret = {"result": False}
+            ret = get_error_result("OtherError")
+            return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
 
 
 class AuthUkeyView(APIView):
 
     def get(self, request, *args, **kwargs):
-        result = LicenseManager().get_ukey()
-        ret = get_error_result("Success", result)
+        ret = LicenseManager().get_ukey()
+        # ret = get_error_result("Success", result)
         return JsonResponse(ret)
 
 
@@ -632,3 +670,79 @@ class UpgradeView(APIView):
             logger.exception("get upgrade info failed:%s", e, exc_info=True)
             ret = get_error_result("OtherError")
         return JsonResponse(ret)
+
+
+class TaskInfoView(APIView):
+
+    def get(self, request, *args, **kwargs):
+        try:
+            page = YzyWebPagination()
+            search_type = request.GET.get("search_type", "")
+            time_frame = request.GET.get("time_frame", "")
+            status = request.GET.get("status", "")
+            query_set = YzyTask.objects.filter(deleted=False).all()
+            if search_type == "current":
+                query_set = query_set[:5]
+            if status:
+                query_set = query_set.filter(status=status).all()
+            if time_frame:
+                date = self.to_date(time_frame)
+                tz = timezone.get_default_timezone()
+                utc_date = date.astimezone(tz)
+                query_set = query_set.filter(created_at__gte=utc_date).all()
+            operates = page.paginate_queryset(queryset=query_set, request=request, view=self)
+            ser = YzyTaskSerializer(instance=operates, many=True, context={'request': request})
+            return page.get_paginated_response(ser.data)
+        except Exception as e:
+            logger.error("get task info error: %s", e)
+            return JsonResponse(get_error_result("OtherError"))
+
+    def to_date(self, screen_scope):
+        today = datetime.datetime.today()
+        if screen_scope == "three_day":
+            date = today - datetime.timedelta(days=3)
+        elif screen_scope == "week":
+            date = today - datetime.timedelta(days=7)
+        elif screen_scope == "month":
+            date = today - datetime.timedelta(days=30)
+        elif screen_scope == "day":
+            date = today
+        else:
+            date = today
+        now = datetime.datetime.strftime(date, "%Y-%m-%d")
+        _date = datetime.datetime.strptime(now, "%Y-%m-%d")
+        return _date
+
+
+class SetSystemTime(APIView):
+    """
+    设置服务器系统时间
+    """
+    def post(self, request):
+        date = request.data.get("date")
+        time_zone = request.data.get("time_zone")
+        ntp_server = request.data.get("ntp_server")
+        if not (date and time_zone) and not ntp_server:
+            logger.error("set system time error:ParamError")
+            return JsonResponse(get_error_result("ParameterError"))
+        nodes = YzyNodes.objects.filter(Q(status=constants.STATUS_ACTIVE, deleted=False) |
+                                        Q(status=constants.STATUS_ERROR, deleted=False)).all()
+        all_task = dict()
+        with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
+            for node in nodes:
+                url = "/api/v1/system/strategy/set_system_time"
+                request_data = {
+                    "date": date,
+                    "time_zone": time_zone,
+                    "ntp_server": ntp_server,
+                    "node_ip": node.ip
+                }
+                future = executor.submit(server_post, url, request_data)
+                all_task[node.name] = future.result()
+
+        names = list()
+        for k, v in all_task.items():
+            if v['code'] == -1:
+                names.append(k)
+        name_str = '、'.join(names)
+        return JsonResponse(get_error_result("Success", data={"names": name_str, "success": len(nodes) - len(names), "fail": len(names)}))

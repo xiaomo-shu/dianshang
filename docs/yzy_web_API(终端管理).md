@@ -694,8 +694,8 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
           "gateway": "172.16.1.254",
           "dns1": "8.8.8.8",
           "dns2": "114.114.114.114",
-		  "group_uuid": "23423423423kkl242kl34234l23kl"
-		  
+		  "group_uuid": "23423423423kkl242kl34234l23kl",
+		  "modify_ip_method": "dhcp"
        }
     }
     ```

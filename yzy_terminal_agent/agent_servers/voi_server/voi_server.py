@@ -1,5 +1,6 @@
 import socket
 import json
+import time
 import os
 import threading
 import ctypes
@@ -50,6 +51,10 @@ class ApiRequestHandler(BaseRequestHandler):
         # req = self.request
         self.request.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, BUF_SIZE)
         self.request.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, BUF_SIZE)
+        self.request.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        self.request.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 15)
+        self.request.setsockopt(socket.SOL_TCP, socket.TCP_KEEPINTVL, 3)
+        self.request.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 5)
 
         logger.info("Got connection open from %s:%s"% self.client_address)
         while True:
@@ -63,11 +68,12 @@ class ApiRequestHandler(BaseRequestHandler):
             try:
                 #msg = self.request.recv(self.headr_length)
                 msg = self.readAll(self.headr_length)
-                logger.info("tcp protocol header %s" % msg)
+                logger.info("client %s:%s tcp protocol header %s" % (self.client_address[0],
+                                                                     self.client_address[1], msg))
                 if not msg:
                     break
             except Exception as e:
-                logger.error("", exc_info=True)
+                logger.error("client: %s:%s" % (self.client_address[0], self.client_address[1]), exc_info=True)
                 voi_terminal_manager.del_client_by_ip(self.client_address[0], self.client_address[1])
                 logger.error(''.join(traceback.format_exc()))
                 break
@@ -76,7 +82,8 @@ class ApiRequestHandler(BaseRequestHandler):
                 paket_struct = YzyProtocol().parse_paket_header(msg)
                 logger.debug("head: {}".format(paket_struct))
             except Exception as e:
-                logger.error("parse protocol header fail: %s"% e, exc_info=True)
+                logger.error("client: %s:%s, parse protocol header fail: %s"% (e, self.client_address[0],
+                                                                            self.client_address[1]), exc_info=True)
                 logger.error(''.join(traceback.format_exc()))
                 voi_terminal_manager.del_client_by_ip(self.client_address[0], self.client_address[1])
                 self.request.close()
@@ -87,28 +94,32 @@ class ApiRequestHandler(BaseRequestHandler):
                 body = self.readAll(body_length)
                 if not body:
                     break
-                #body = self.request.recv(body_length)
             except Exception as e:
-                logger.error("tcp socket error: %s" % e, exc_info=True)
-                logger.error(''.join(traceback.format_exc()))
+                logger.error("tcp socket error: %s, %s:%s"%(e, self.client_address[0],
+                                                              self.client_address[1]), exc_info=True)
                 voi_terminal_manager.del_client_by_ip(self.client_address[0], self.client_address[1])
                 self.request.close()
                 break
-            logger.debug("tcp read body: {}, {}".format(body[:100], len(body)))
+            logger.debug("client: {}:{} tcp read body: {}, {}".format(self.client_address[0],
+                                                              self.client_address[1], len(body), body))
             paket_struct.set_data(body)
             service_handler = ServiceHandler(self.client_address[0], self.client_address[1])
-            # func = service_handler.code_to_service_func(paket_struct.service_code)
-            # if not func:
-            #     logger.error("not function to %s" % paket_struct.service_code)
-            #     continue
             try:
-                # func(self.request, paket_struct)
-                # sem.acquire(1)
                 service_handler.processor(self.request, paket_struct)
-                # sem.release()
             except Exception as err:
                 logger.error("Error: {}".format(err))
                 logger.error(''.join(traceback.format_exc()))
+
+
+def voi_thread_monitor(thread_list):
+    try:
+        while True:
+            for th in thread_list:
+                logger.info("voi server thread_monitor : %s the status is: %s"% (th.name, th.isAlive()))
+            time.sleep(5)
+    except:
+        logger.error("", exc_info=True)
+        pass
 
 
 class VOITerminalServer:
@@ -118,10 +129,16 @@ class VOITerminalServer:
 
     def run(self):
         try:
-            t = threading.Thread(target=voi_terminal_manager.run)
+            thread_list = list()
+            t = threading.Thread(target=voi_terminal_manager.run, name="terminal_message_thread")
             t.start()
-            heartbeat_check = threading.Thread(target=voi_terminal_manager.check_client_heartbeat)
+            thread_list.append(t)
+            heartbeat_check = threading.Thread(target=voi_terminal_manager.check_client_heartbeat,
+                                               name="terminal_heart_thread")
             heartbeat_check.start()
+            thread_list.append(heartbeat_check)
+            thread_monitor = threading.Thread(target=voi_thread_monitor, args=(thread_list,))
+            thread_monitor.start()
             logger.info("voi terminal server start ......")
             serv = MyThreadingTCPServer(('', self.port), ApiRequestHandler)
             serv.serve_forever()

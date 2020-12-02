@@ -98,7 +98,7 @@ class EducationDesktopAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("education desktop action %s failed:%d", action, e)
+            logger.exception("education desktop action %s failed:%d", action, e)
             return build_result("OtherError")
 
 
@@ -188,7 +188,7 @@ class PersonalDesktopAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("personal desktop action %s failed:%s", action, e)
+            logger.exception("personal desktop action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -406,7 +406,7 @@ class InstanceAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("instance action %s failed:%s", action, e)
+            logger.exception("instance action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

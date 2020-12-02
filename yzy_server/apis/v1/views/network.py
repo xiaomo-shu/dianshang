@@ -41,7 +41,7 @@ class NetworkAPI(MethodView):
 
             return build_result("Success", ret)
         except Exception as e:
-            logger.error("network action %s failed:%s", action, e)
+            logger.exception("network action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -71,7 +71,7 @@ class SubnetAPI(MethodView):
                 return NetworkController().get_subnets_of_network(network_uuid)
             return build_result("Success", ret)
         except Exception as e:
-            logger.error("subnet action %s failed:%s", action, e)
+            logger.exception("subnet action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -108,7 +108,7 @@ class VirtualSwitchAPI(MethodView):
                 return abort_error(404)
         except Exception as e:
             print(e)
-            logger.error("vswitch action %s failed:%s", action, e)
+            logger.exception("vswitch action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

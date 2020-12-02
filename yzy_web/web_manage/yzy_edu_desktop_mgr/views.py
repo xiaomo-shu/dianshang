@@ -1,10 +1,12 @@
 import json
 import logging
 import ipaddress
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from web_manage.common.errcode import get_error_result
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSetMixin
 
 from web_manage.common.log import operation_record, insert_operation_log
 from web_manage.common.schemas import check_input
@@ -12,7 +14,7 @@ from web_manage.common.http import server_post
 from web_manage.common import constants
 from web_manage.common.general_query import GeneralQuery
 from . import models as education_model
-from web_manage.common.utils import is_ip_addr
+from web_manage.common.utils import is_ip_addr, JSONResponse, NumberToChinese
 from .serializers import *
 from .edu_manager.template_manager import TemplateManager
 from .edu_manager.desktop_manager import DesktopManager
@@ -588,3 +590,188 @@ class EducationInstanceView(APIView):
     def put(self, request):
         ret = {"code": -1, "msg": "未知异常"}
         return JsonResponse(ret, json_dumps_params={'ensure_ascii': False})
+
+
+class TermView(ViewSetMixin, APIView):
+    """
+    排课管理--学期
+    """
+    def list(self, request, *args, **kwargs):
+        """
+        获取学期列表
+        """
+        query = GeneralQuery()
+        query_dict = query.get_query_kwargs(request)
+        return query.model_query(request, education_model.YzyTerm, TermSerializer, query_dict)
+
+    def create(self, request, *args, **kwargs):
+        """
+        新增学期
+        """
+        return JsonResponse(server_post("/api/v1/term/create", request.data))
+
+    def update(self, request, *args, **kwargs):
+        """
+        编辑学期
+        """
+        request.data["uuid"] = kwargs.get("term_uuid", "")
+        return JsonResponse(server_post("/api/v1/term/update", request.data))
+
+    def delete(self, request, *args, **kwargs):
+        """
+        删除学期
+        """
+        return JsonResponse(server_post("/api/v1/term/delete", {"uuid": kwargs.get("term_uuid", "")}))
+
+    def check_name_existence(self, request, *args, **kwargs):
+        """
+        校验学期名称是否已存在
+        """
+        term_name = request.GET.get("name", None)
+        if not term_name:
+            return JsonResponse(get_error_result("ParamError"))
+        term_obj = education_model.YzyTerm.objects.filter(deleted=False, name=term_name).count()
+        if term_obj > 0:
+            return JsonResponse(get_error_result("TermNameExist"))
+        return JsonResponse(get_error_result("Success"))
+
+    def get_current_date(self, request):
+        """
+        获取服务器的当前日期
+        """
+        today = time.strftime("%Y/%m/%d")
+        return JsonResponse(get_error_result(data=today), status=200, json_dumps_params={'ensure_ascii': False})
+
+    def get_edu_groups(self, request, *args, **kwargs):
+        """
+        获取指定学期的教学分组列表
+        """
+        term_uuid = kwargs.get("term_uuid", "")
+        if not term_uuid or not education_model.YzyTerm.objects.filter(deleted=False, uuid=term_uuid).first():
+            return JSONResponse(get_error_result("TermNotExist"))
+
+        edu_groups = education_model.YzyGroup.objects.filter(deleted=False, group_type=constants.EDUCATION_GROUP)
+        ser = TermEduGroupSerializer(instance=edu_groups, many=True, context={'request': request})
+
+        return JSONResponse(ser.data)
+
+    def get_weeks_num_map(self, request, *args, **kwargs):
+        """
+        获取可批量应用的周列表
+        """
+        term_uuid = kwargs.get("term_uuid", "")
+        term_obj = education_model.YzyTerm.objects.filter(deleted=False, uuid=term_uuid).first()
+        if not term_obj:
+            return JSONResponse(get_error_result("TermNotExist"))
+
+        group_uuid = request.GET.get("group_uuid", "")
+        if not education_model.YzyGroup.objects.filter(deleted=False, uuid=group_uuid).first():
+            return JSONResponse(get_error_result("EduGroupNotExist"))
+
+        # 找到该学期、该教学分组下，所有已有课表的周
+        cs_week_num_list = education_model.YzyCourseSchedule.objects.filter(
+            deleted=False,
+            term=term_uuid,
+            group=group_uuid
+        ).values("week_num").distinct().all()
+        cs_week_num_list = [_d["week_num"] for _d in cs_week_num_list]
+
+        ret = list()
+        weeks_num_map = json.loads(term_obj.weeks_num_map)
+        for k, v in weeks_num_map.items():
+            _d = dict()
+            _d["week_num"] = int(k)
+            ntc = NumberToChinese().number_to_str(_d["week_num"])
+            if ntc.startswith("一十"):
+                ntc = ntc[1:]
+            _d["value"] = "第%s周 %s--%s" % (ntc, v[0][5:], v[1][5:])
+            if _d["week_num"] in cs_week_num_list:
+                _d["occupied"] = constants.WEEK_OCCUPIED
+            else:
+                _d["occupied"] = constants.WEEK_NOT_OCCUPIED
+            ret.append(_d)
+        return JSONResponse(ret)
+
+
+class CourseScheduleView(ViewSetMixin, APIView):
+    """
+    排课管理--课表
+    """
+    def get(self, request, *args, **kwargs):
+        """
+        获取指定周的课表内容
+        """
+        term_uuid = request.GET.get('term_uuid')
+        group_uuid = request.GET.get('group_uuid')
+        week_num = request.GET.get('week_num')
+
+        term_obj = education_model.YzyTerm.objects.filter(deleted=False, uuid=term_uuid).first()
+        if not term_obj:
+            return JsonResponse(get_error_result("TermNotExist"))
+        if not education_model.YzyGroup.objects.filter(deleted=False, uuid=group_uuid, group_type=constants.EDUCATION_GROUP).first():
+            return JsonResponse(get_error_result("EduGroupNotExist"))
+
+        schedule_obj = education_model.YzyCourseSchedule.objects.filter(
+            deleted=False,
+            group=group_uuid,
+            term=term_uuid,
+            week_num=week_num
+        ).first()
+        if schedule_obj:
+            ser = CourseScheduleSerializer(instance=schedule_obj, many=False, context={'request': request})
+            return JsonResponse(get_error_result(data=ser.data))
+        else:
+            data = {
+                "uuid": "",
+                "term_uuid": term_uuid,
+                "group_uuid": group_uuid,
+                "week_num": week_num,
+                "course": list()
+            }
+
+            course_num_map = json.loads(term_obj.course_num_map)
+            ret_dict = dict()
+            for k in course_num_map.keys():
+                ntc = NumberToChinese().number_to_str(int(k))
+                if ntc.startswith("一十"):
+                    ntc = ntc[1:]
+                ret_dict[int(k)] = {
+                    "course_num": int(k),
+                    "value": "第%s节 %s" % (ntc, course_num_map.get(k, ""))
+                }
+                for v in WEEKDAY_MAP.values():
+                    ret_dict[int(k)][v] = {"name": "", "uuid": ""}
+
+            data["course"] = list(ret_dict.values())
+            return JsonResponse(get_error_result(data=data))
+
+    def update(self, request, *args, **kwargs):
+        """
+        编辑课表
+        """
+        return JsonResponse(server_post("/api/v1/course_schedule/update", request.data))
+
+    def apply(self, request, *args, **kwargs):
+        """
+        批量应用课表
+        """
+        request.data["uuid"] = kwargs.get("course_schedule_uuid", "")
+        return JsonResponse(server_post("/api/v1/course_schedule/apply", request.data))
+
+    def enable(self, request, *args, **kwargs):
+        """
+        启用课表
+        """
+        return JsonResponse(server_post("/api/v1/course_schedule/enable", request.data))
+
+    def disable(self, request, *args, **kwargs):
+        """
+        禁用课表
+        """
+        return JsonResponse(server_post("/api/v1/course_schedule/disable", request.data))
+
+    def delete(self, request, *args, **kwargs):
+        """
+        清除全部课表
+        """
+        return JsonResponse(server_post("/api/v1/course_schedule/delete", request.data))

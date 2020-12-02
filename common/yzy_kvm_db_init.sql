@@ -40,6 +40,23 @@ CREATE TABLE `yzy_admin_user` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
+
+/*Table structure for table `yzy_auth` */
+
+DROP TABLE IF EXISTS `yzy_auth`;
+CREATE TABLE `yzy_auth` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `sn` varchar(64) NOT NULL COMMENT '授权序列号',
+  `organization` varchar(255) DEFAULT NULL COMMENT '单位名称',
+  `remark` varchar(255) DEFAULT '',
+  `deleted` int(11) NOT NULL DEFAULT 0,
+  `deleted_at` datetime DEFAULT NULL,
+  `created_at` datetime DEFAULT NULL,
+  `updated_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='授权信息表';
+
+
 /*Table structure for table `yzy_base_images` */
 
 DROP TABLE IF EXISTS `yzy_base_images`;
@@ -213,6 +230,8 @@ CREATE TABLE `yzy_instances` (
   `name` varchar(255) NOT NULL COMMENT '桌面的名称',
   `host_uuid` varchar(64) NOT NULL,
   `desktop_uuid` varchar(64) NOT NULL COMMENT '桌面组的uuid',
+  `sys_storage` varchar(64) NOT NULL COMMENT '系统盘对应的存储设备uuid',
+  `data_storage` varchar(64) NOT NULL COMMENT '数据盘对应的存储设备uuid',
   `classify` int(11) NOT NULL DEFAULT 1 COMMENT '桌面类型，1-教学桌面，2-个人桌面',
   `terminal_id` int(1) DEFAULT NULL COMMENT '教学桌面对应的终端号',
   `terminal_mac` varchar(32) DEFAULT NULL COMMENT '教学桌面对应的终端mac',
@@ -331,7 +350,7 @@ CREATE TABLE `yzy_node_network_info` (
   `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '节点网络信息',
   `uuid` varchar(64) NOT NULL COMMENT '节点网络uuid',
   `nic` varchar(32) NOT NULL COMMENT '网络接口名称',
-  `mac` varchar(32) DEFAULT NULL COMMENT 'mac地址',
+  `mac` varchar(200) DEFAULT NULL COMMENT 'mac地址',
   `node_uuid` varchar(64) NOT NULL COMMENT '节点uuid',
   `speed` int(11) DEFAULT NULL COMMENT '速度',
   `type` tinyint(1) DEFAULT 0 COMMENT '0-Ethernet，1-bond',
@@ -353,8 +372,8 @@ CREATE TABLE `yzy_node_storages` (
   `uuid` varchar(64) NOT NULL COMMENT '节点存储设备uuid',
   `node_uuid` varchar(64) NOT NULL COMMENT '节点uuid',
   `path` varchar(64) NOT NULL COMMENT '节点存储设备分区路径',
-  `role` varchar(64) NOT NULL COMMENT '分区的角色,1-模板系统盘 2-模板数据盘 3-虚拟机系统盘 4-虚拟机数据盘',
-  `type` int(11) DEFAULT 2 COMMENT '分区类型，1-ssd 2-sata',
+  `role` varchar(64) DEFAULT '' COMMENT '分区的实际存储角色,1-模板系统盘 2-模板数据盘 3-虚拟机系统盘 4-虚拟机数据盘',
+  `type` int(11) DEFAULT 1 COMMENT '分区类型，0-ssd 1-hdd',
   `used` bigint(20) NOT NULL COMMENT '已使用',
   `free` bigint(20) NOT NULL COMMENT '剩余',
   `total` bigint(20) NOT NULL COMMENT '总大小',
@@ -617,6 +636,8 @@ CREATE TABLE `yzy_template` (
   `pool_uuid` varchar(64) NOT NULL,
   `network_uuid` varchar(64) NOT NULL COMMENT '网络uuid',
   `subnet_uuid` varchar(64) DEFAULT NULL COMMENT '子网uuid',
+  `sys_storage` varchar(64) NOT NULL COMMENT '系统盘对应的存储设备uuid',
+  `data_storage` varchar(64) NOT NULL COMMENT '数据盘对应的存储设备uuid',
   `bind_ip` varchar(20) NOT NULL COMMENT '绑定ip',
   `vcpu` int(11) DEFAULT NULL,
   `ram` float NOT NULL COMMENT '内存大小，单位：G',
@@ -716,6 +737,7 @@ CREATE TABLE `yzy_database_back` (
   `size` float NOT NULL COMMENT '备份文件大小，单位：MB',
   `type` tinyint(1) NOT NULL DEFAULT '0' COMMENT '备份类型，0-自动备份，1-手动备份',
   `status` tinyint(4) NOT NULL DEFAULT 0 COMMENT '0-成功，1-失败',
+  `md5_sum` varchar(64) DEFAULT NULL COMMENT 'md5校验值',
   `deleted` int(11) NOT NULL DEFAULT '0' COMMENT '删除标记',
   `deleted_at` datetime DEFAULT NULL,
   `created_at` datetime DEFAULT NULL,
@@ -730,7 +752,7 @@ CREATE TABLE `yzy_crontab_task` (
   `uuid` varchar(64) NOT NULL COMMENT 'uuid',
   `name` varchar(32) NOT NULL COMMENT '定时任务名称',
   `desc` varchar(200) DEFAULT NULL COMMENT '描述',
-  `type` tinyint(4) DEFAULT 0 COMMENT '类型(0-数据库自动备份，1-桌面定时任务，2-主机定时关机，3-终端定时关机，4-日志定时清理)',
+  `type` tinyint(4) DEFAULT 0 COMMENT '类型(0-数据库自动备份，1-桌面定时任务，2-主机定时关机，3-终端定时关机，4-日志定时清理，5-课表定时任务)',
   `status` tinyint(1) NOT NULL DEFAULT '0' COMMENT '状态 0 -未启用，1-启用',
   `deleted` int(11) NOT NULL DEFAULT '0',
   `deleted_at` datetime DEFAULT NULL,
@@ -747,8 +769,8 @@ CREATE TABLE `yzy_crontab_detail` (
   `task_uuid` varchar(64) NOT NULL COMMENT '定时任务uuid',
   `hour` int(11) DEFAULT NULL COMMENT '执行小时',
   `minute` int(11) DEFAULT NULL COMMENT '执行分钟',
-  `cycle` varchar(10) DEFAULT '' COMMENT '周期，day/week/month',
-  `values` varchar(32) DEFAULT '' COMMENT '记录周 如：1,2,3,4,5',
+  `cycle` varchar(10) DEFAULT '' COMMENT '周期，day/week/month/course：其中course表示课表定时任务的周期',
+  `values` text DEFAULT '' COMMENT '记录周 如：1,2,3,4,5 或 json',
   `func` varchar(255) NOT NULL COMMENT '定时任务执行函数',
   `params` text DEFAULT '' COMMENT '执行参数',
   `deleted` int(11) NOT NULL DEFAULT '0',
@@ -801,10 +823,13 @@ CREATE TABLE `yzy_voi_template` (
   `desc` text DEFAULT NULL COMMENT '模板描述',
   `os_type` varchar(20) NOT NULL COMMENT '系统类型',
   `owner_id` int(11) NOT NULL COMMENT '所属用户',
+  `terminal_mac` varchar(64) NOT NULL DEFAULT '' COMMENT '上传终端mac',
   `host_uuid` varchar(64) NOT NULL COMMENT '所属节点uuid',
   `network_uuid` varchar(64) NOT NULL COMMENT '网络uuid',
-  `subnet_uuid` varchar(64) DEFAULT "" COMMENT '子网uuid',
-  `bind_ip` varchar(20) DEFAULT "" COMMENT '绑定ip',
+  `subnet_uuid` varchar(64) DEFAULT '' COMMENT '子网uuid',
+  `sys_storage` varchar(64) NOT NULL COMMENT '系统盘对应的存储设备uuid',
+  `data_storage` varchar(64) NOT NULL COMMENT '数据盘对应的存储设备uuid',
+  `bind_ip` varchar(20) DEFAULT '' COMMENT '绑定ip',
   `vcpu` int(11) NOT NULL COMMENT 'vcpu',
   `ram` float NOT NULL COMMENT '内存，单位G',
   `classify` int(11) DEFAULT 1 COMMENT '1-教学模板 2-个人模板',
@@ -853,6 +878,8 @@ CREATE TABLE `yzy_voi_device_info` (
   `size` int(11) DEFAULT 0 COMMENT '磁盘大小，单位为GB',
   `section` bigint(20) DEFAULT 0 COMMENT '磁盘扇区个数，bytes / 512',
   `used` float DEFAULT 0 COMMENT '磁盘已使用大小，单位为GB，保留两位小数',
+  `diff1_ver` int(11) DEFAULT 0 COMMENT '差分1的版本号',
+  `diff2_ver` int(11) DEFAULT 0 COMMENT '差分2的版本号',
   `progress` int(11) DEFAULT 0 COMMENT '客户端上传时，上传的进度',
   `upload_path` varchar(255) DEFAULT '' COMMENT '客户端上传时，上传的镜像存放路径',
   `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
@@ -891,6 +918,8 @@ CREATE TABLE `yzy_voi_desktop_group` (
   `os_type` varchar(64) DEFAULT 'windows_7_x64',
   `sys_restore` tinyint(4) DEFAULT 1 COMMENT '系统盘是否重启还原',
   `data_restore` tinyint(4) DEFAULT 1 COMMENT '数据盘是否重启还原，大于1代表没有数据盘',
+  `sys_reserve_size` int(11) DEFAULT 0 COMMENT '系统盘保留空间',
+  `data_reserve_size` int(11) DEFAULT 0 COMMENT '数据盘保留空间',
   `prefix` varchar(128) DEFAULT 'PC' COMMENT '桌面名称的前缀',
   `use_bottom_ip` tinyint(1) DEFAULT TRUE COMMENT '是否使用底层客户端IP作为桌面IP',
   `ip_detail` text DEFAULT '' COMMENT '不使用底层IP时的IP设置规则',
@@ -898,6 +927,7 @@ CREATE TABLE `yzy_voi_desktop_group` (
   `default` tinyint(1) DEFAULT FALSE COMMENT '是否为默认',
   `show_info` tinyint(1) DEFAULT FALSE COMMENT '是否显示桌面信息，0-不显示，1-显示',
   `auto_update` tinyint(1) DEFAULT FALSE COMMENT '是否自动更新桌面，0-否，1-是',
+  `diff_mode` tinyint(1) DEFAULT 1 COMMENT '差分盘合并模式，0-不合并(覆盖模式)，1-合并(增量模式)',
   `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
   `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
   `created_at` datetime DEFAULT NULL COMMENT '创建时间',
@@ -916,6 +946,7 @@ CREATE TABLE `yzy_voi_group` (
   `start_ip` varchar(20) DEFAULT NULL COMMENT '预设终端的开始IP',
   `end_ip` varchar(20) DEFAULT NULL COMMENT '预设终端的结束IP',
   `enabled` tinyint(1) NOT NULL DEFAULT 1 COMMENT '终端预设分组规则，默认启用',
+  `dhcp` text DEFAULT NULL COMMENT 'dhcp配置',
   `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
   `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
   `created_at` datetime DEFAULT NULL COMMENT '创建时间',
@@ -950,7 +981,7 @@ CREATE TABLE `yzy_voi_terminal` (
   `created_at` datetime DEFAULT NULL,
   `updated_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE KEY `mac_index` (`mac`) USING BTREE,
+--   UNIQUE KEY `mac_index` (`mac`) USING BTREE,
   KEY `terminal_id_ip_index` (`terminal_id`,`ip`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8 COMMENT='终端配置信息表';
 
@@ -978,16 +1009,23 @@ CREATE TABLE `yzy_voi_torrent_task` (
   `torrent_name` varchar(64) NOT NULL COMMENT '种子名称',
   `torrent_path` varchar(200) NOT NULL COMMENT '种子路径',
   `torrent_size` int(11) NOT NULL DEFAULT 0 COMMENT '种子文件大小',
+  `desktop_name` varchar(32) NOT NULL COMMENT '桌面组名称',
   `template_uuid` varchar(64) NOT NULL COMMENT '对应模板uuid',
   `disk_uuid` varchar(64) NOT NULL COMMENT '磁盘uuid',
   `disk_name` varchar(64) NOT NULL COMMENT '磁盘名称',
+  `disk_size` float NOT NULL COMMENT '磁盘文件大小，单位G',
+  `disk_type` varchar(32) NOT NULL COMMENT '磁盘类型，系统盘-system,数据盘-data',
+  `save_path` varchar(200) NOT NULL COMMENT '文件保存路径',
   `terminal_mac` varchar(32) NOT NULL COMMENT '终端mac',
   `terminal_ip` varchar(32) NOT NULL COMMENT '终端ip',
   `type` tinyint(1) NOT NULL COMMENT '任务类型，0-上传，1-下载',
   `status` tinyint(1) NOT NULL DEFAULT 0 COMMENT '任务状态，0-初始状态，1-进行中，2-完成',
+  `batch_no` bigint(11) NOT NULL DEFAULT 0 COMMENT '任务批次号',
+  `sum` int(5) NOT NULL DEFAULT 1 COMMENT '批次任务的任务总数',
   `state` varchar(32) NOT NULL DEFAULT '' COMMENT '任务状态',
   `process` int(5) NOT NULL DEFAULT 0 COMMENT '任务进度',
   `download_rate` int(5) NOT NULL DEFAULT 0 COMMENT '下载速率',
+  `upload_rate` int(5) NOT NULL DEFAULT 0 COMMENT '上传速率',
   `deleted` bigint(11) NOT NULL DEFAULT 0 COMMENT '删除标志',
   `deleted_at` datetime DEFAULT NULL,
   `created_at` datetime DEFAULT NULL,
@@ -1127,6 +1165,174 @@ CREATE TABLE `yzy_menu_permission` (
   KEY `uniq_title` (`title`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPACT COMMENT='系统菜单';
 
+DROP TABLE IF EXISTS `yzy_ha_info`;
+CREATE TABLE `yzy_ha_info` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'HA配置记录',
+  `uuid` varchar(64) NOT NULL COMMENT 'HA配置记录uuid',
+  `vip` varchar(20) NOT NULL COMMENT '浮动IP',
+  `netmask` varchar(20) NOT NULL COMMENT '浮动IP子网掩码',
+  `quorum_ip` varchar(20) NOT NULL COMMENT '仲裁IP',
+  `sensitivity` int(11) NOT NULL COMMENT '敏感度',
+  `master_ip` varchar(20) NOT NULL COMMENT '初始主控节点管理IP',
+  `backup_ip` varchar(20) NOT NULL COMMENT '初始备控节点管理IP',
+  `master_nic` varchar(32) NOT NULL COMMENT '初始主控节点心跳网卡名称',
+  `backup_nic` varchar(32) NOT NULL COMMENT '初始备控节点心跳网卡名称',
+  `master_nic_uuid` varchar(64) NOT NULL COMMENT '初始主控节点心跳网卡uuid',
+  `backup_nic_uuid` varchar(64) NOT NULL COMMENT '初始备控节点心跳网卡uuid',
+  `master_uuid` varchar(64) NOT NULL COMMENT '初始主控节点uuid',
+  `backup_uuid` varchar(64) NOT NULL COMMENT '初始备控节点uuid',
+  `ha_enable_status` int(11) DEFAULT 0 COMMENT 'HA启用状态：0已启用，1未启用',
+  `ha_running_status` int(11) DEFAULT 0 COMMENT 'HA运行状态：0正常，1故障',
+  `data_sync_status` int(11) DEFAULT 0 COMMENT '数据同步状态：0已同步，1同步中，2同步失败',
+  `master_net_status` int(11) DEFAULT 0 COMMENT '初始主控节点网络连接状态：0正常，1断开，2未知',
+  `backup_net_status` int(11) DEFAULT 0 COMMENT '初始备控节点网络连接状态：0正常，1断开，2未知',
+  `deleted` int(11) DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='HA配置表';
+
+
+CREATE TABLE `yzy_term` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '学期id',
+  `uuid` varchar(64) NOT NULL COMMENT '学期uuid',
+  `name` varchar(32) NOT NULL COMMENT '学期名称',
+  `start` varchar(10) NOT NULL COMMENT '学期开始日期',
+  `end` varchar(10) NOT NULL COMMENT '学期结束日期',
+  `duration` int(11) NOT NULL COMMENT '课堂时长',
+  `break_time` int(11) NOT NULL COMMENT '课间时长',
+  `morning` varchar(5) NOT NULL COMMENT '上午开始时间',
+  `afternoon` varchar(5) NOT NULL COMMENT '下午开始时间',
+  `evening` varchar(5) NOT NULL COMMENT '晚上开始时间',
+  `morning_count` int(11) NOT NULL COMMENT '上午上课节数',
+  `afternoon_count` int(11) NOT NULL COMMENT '下午上课节数',
+  `evening_count` int(11) NOT NULL COMMENT '晚上上课节数',
+  `course_num_map` text NOT NULL COMMENT '上课时间映射表:{"1": "08:00-08:45", "2": "09:00-09:45", ...,  "10": "20:00-20:45"}',
+  `weeks_num_map` text NOT NULL COMMENT '学期周映射表:{''1'': [''2020/08/31'', ''2020/09/06''], ''2'': [''2020/09/07'', ''2020/09/13''], ...}',
+  `crontab_task_uuid` varchar(64) NOT NULL COMMENT '定时任务uuid',
+  `group_status_map` text NOT NULL COMMENT '教学桌面组uuid与启用状态映射表，状态: 0-已禁用,1-已启用：{"41b212d6-3ef4-49f1-851d-424cb4559261": 1, "f33d3ff2-af44-437e-9c78-7b5be9e4f09f":  0, ...} ',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT 'updated_at',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='学期表';
+
+CREATE TABLE `yzy_course_schedule` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '周课表id',
+  `uuid` varchar(64) NOT NULL COMMENT '周课表uuid',
+  `term_uuid` varchar(64) NOT NULL COMMENT '学期uuid',
+  `group_uuid` varchar(64) NOT NULL COMMENT '教学分组uuid',
+  `course_template_uuid` varchar(64) NOT NULL COMMENT '周课表模板uuid',
+  `week_num` int(11) NOT NULL COMMENT '第几周',
+  `course_md5` varchar(64) NOT NULL COMMENT '课程内容md5',
+  `status` int(11) NOT NULL COMMENT '状态: 0-已禁用,1-已启用',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='周课表';
+
+CREATE TABLE `yzy_course_template` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '周课表模板id',
+  `uuid` varchar(64) NOT NULL COMMENT '周课表模板uuid',
+  `desktops` text NOT NULL COMMENT '教学桌面组uuid与名称映射表: {''f56036ca-e91d-440c-8e33-26a18c1f7220'': ''数学'', ''71775fe7-c8b9-48e9-a1fd-898bd0e804f6'':  ''英语'',  ''9f9959c7-339a-40a5-9ee0-7bde87296bf4'': ''计算机'' }',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='周课表模板';
+
+CREATE TABLE `yzy_course` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '课程id',
+  `uuid` varchar(64) NOT NULL COMMENT '课程uuid',
+  `course_template_uuid` varchar(64) NOT NULL COMMENT '周课表模板uuid',
+  `desktop_uuid` varchar(64) NOT NULL COMMENT '教学桌面组uuid',
+  `weekday` int(11) NOT NULL COMMENT '星期几',
+  `course_num` int(11) NOT NULL COMMENT '第几节课',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='课程';
+
+DROP TABLE IF EXISTS `yzy_task`;
+CREATE TABLE `yzy_task` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '任务id',
+  `uuid` varchar(64) NOT NULL COMMENT 'uuid',
+  `task_uuid` varchar(64) NOT NULL COMMENT '任务uuid',
+  `name` varchar(64) NOT NULL COMMENT '任务名称',
+  `status` varchar(20) NOT NULL COMMENT '任务状态',
+  `type` int(11) DEFAULT 0 COMMENT '任务类型',
+  `deleted` int(11) DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='任务信息表';
+
+/*Table structure for table `yzy_remote_storages` */
+
+DROP TABLE IF EXISTS `yzy_remote_storages`;
+
+CREATE TABLE `yzy_remote_storages` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '远端存储设备id',
+  `uuid` varchar(64) NOT NULL COMMENT '远端存储设备uuid',
+  `name` varchar(32) NOT NULL COMMENT '远端存储名称',
+  `server` varchar(100) NOT NULL COMMENT '远端存储远程地址',
+  `role` varchar(64) DEFAULT '' COMMENT '分区的实际存储角色,1-模板系统盘 2-模板数据盘 3-虚拟机系统盘 4-虚拟机数据盘',
+  `type` int(11) DEFAULT 0 COMMENT '远端存储类型，0-nfs',
+  `used` bigint(20) DEFAULT NULL COMMENT '已使用',
+  `free` bigint(20) DEFAULT NULL COMMENT '剩余',
+  `total` bigint(20) DEFAULT NULL COMMENT '总大小',
+  `allocated` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否已分配给资源池，0-否，1-是',
+  `allocated_to` varchar(64) DEFAULT NULL COMMENT '分配资源池uuid',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='远端存储信息表';
+
+DROP TABLE IF EXISTS `yzy_voi_terminal_performance`;
+CREATE TABLE `yzy_voi_terminal_performance` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'voi终端性能id',
+  `uuid` varchar(64) NOT NULL COMMENT 'voi终端性能uuid',
+  `terminal_uuid` varchar(64) NOT NULL COMMENT '终端uuid',
+  `terminal_mac` varchar(32) NOT NULL COMMENT '终端mac地址',
+  `cpu_ratio` float(5, 2) NULL COMMENT '运行cpu速率',
+  `network_ratio` float(5, 2) NULL COMMENT '网络速率',
+  `memory_ratio` float(5, 2) NULL COMMENT '内存占有率',
+  `cpu_temperature` float(5, 2) NULL COMMENT 'cpu温度',
+  `hard_disk` float(5, 2) NULL COMMENT '硬盘占有率',
+  `cpu` text COMMENT 'cpu信息',
+  `memory` text COMMENT '内存信息',
+  `network` text COMMENT '网络信息',
+  `hard` text COMMENT '硬盘信息',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='voi终端性能监控表';
+
+DROP TABLE IF EXISTS `yzy_voi_terminal_hard_ware`
+CREATE TABLE `yzy_voi_terminal_hard_ware` (
+  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'voi硬件记录id',
+  `uuid` varchar(64) NOT NULL COMMENT 'voi硬件记录uuid',
+  `terminal_uuid` varchar(64) NOT NULL COMMENT '终端uuid',
+  `terminal_mac` varchar(32) NOT NULL COMMENT '终端mac地址',
+  `content` text COMMENT '硬件变更详情',
+  `deleted` int(11) NOT NULL DEFAULT 0 COMMENT '删除标记',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='voi终端硬件记录表';
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
 /*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
@@ -1191,9 +1397,14 @@ insert  into `yzy_menu_permission`(`id`,`pid`,`type`,`title`,`name`,`component`,
 (56,24,4,'详情','teachDeskGroupDeatil','teachDesktopManage/teachDeskGroupDeatilVoi',2,NULL,NULL,NULL,'/teachDesktopManage/teachDeskGroupDeatilVoi/:id',NULL,1,0,'teachDesktopManage:teachDeskGroupDeatil',0,NULL,NULL,NULL),
 (57,33,4,'详情','personalDeskGroupDeatil','personalDesktopManage/personalDeskGroupDeatil',2,NULL,NULL,NULL,'/personalDesktopManage/personalDeskGroupDeatil/:id',NULL,1,0,'personalDesktopManage:personalDeskGroupDeatil',0,NULL,NULL,NULL),
 (58,9,4,'计算节点','computeNode','resManagement/jumpPage/computeNode',2,NULL,NULL,NULL,'/resManagement/jumpPage/computeNode/:uuid/:name',NULL,1,0,'resManagement:computeNode',0,NULL,NULL,NULL),
-(59,9,4,'节点信息','nodeToMaster','resManagement/jumpPage/nodeToMaster',2,NULL,NULL,NULL,'/resManagement/jumpPage/nodeToMaster',NULL,1,0,'resManagement:nodeToMaster',0,NULL,NULL,NULL),
+(59,9,4,'节点信息','nodeToMaster','resManagement/jumpPage/nodeToMaster',3,NULL,NULL,NULL,'/resManagement/jumpPage/nodeToMaster',NULL,1,0,'resManagement:nodeToMaster',0,NULL,NULL,NULL),
 (60,40,4,'添加成员','addMembers','systemManage/jumpPage/addMembers',2,NULL,NULL,NULL,'/systemManage/jumpPage/addMembers',NULL,1,0,'systemManage:addMembers',0,NULL,NULL,NULL),
 (61,40,4,'编辑成员','editMembers','systemManage/jumpPage/editMembers',2,NULL,NULL,NULL,'/systemManage/jumpPage/editMembers',NULL,1,0,'systemManage:editMembers',0,NULL,NULL,NULL),
 (62,43,2,'激活','authActivation',NULL,NULL,NULL,NULL,NULL,NULL,NULL,1,0,NULL,0,NULL,NULL,NULL),
 (63,40,4,'权限设置','setAuthority','systemManage/jumpPage/set-authority',2,NULL,NULL,NULL,'/systemManage/jumpPage/setAuthority',NULL,1,0,'systemManage:setAuthority',0,NULL,NULL,NULL),
-(64,5,1,'主机监控','hostMonitor','monitor/hostMonitor',1,NULL,NULL,NULL,'/monitor/hostMonitor',NULL,1,0,'monitor:hostMonitor',0,NULL,NULL,NULL);
+(64,5,1,'主机监控','hostMonitor','monitor/hostMonitor',1,NULL,NULL,NULL,'/monitor/hostMonitor',NULL,1,0,'monitor:hostMonitor',0,NULL,NULL,NULL),
+(65,3,1,'排课管理','scheduleManage','teachDesktopManage/scheduleManage',1,NULL,NULL,NULL,'/teachDesktopManage/scheduleManage',NULL,1,0,'scheduleManage:teachDesktopManage',0,NULL,NULL,NULL),
+(66,65,4,'课程设置','classSchedule','teachDesktopManage/classSchedule',2,NULL,NULL,NULL,'/teachDesktopManage/classSchedule',NULL,1,0,'classSchedule:teachDesktopManage',0,NULL,NULL,NULL),
+(67,2,1,'存储管理','storageManagement','resManagement/storageManagement',1,NULL,NULL,NULL,'/resManagement/storageManagement',NULL,1,0,'storageManagement:resManagement',0,NULL,NULL,NULL);
+
+

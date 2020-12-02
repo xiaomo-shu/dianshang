@@ -2696,11 +2696,17 @@ class TerminalConf(object):
      - window_mode
      - disconnect_setup
      - show
+     - hide_tools
+     - top_level_service_ip
+     - teacher_service_ip
+     - classroom_num
+     - multicast_ip
+     - multicast_port
 
     """
 
 
-    def __init__(self, terminal_id=None, mac=None, ip_info=None, terminal_name=None, platform=None, soft_version=None, show_desktop_type=None, auto_desktop=None, close_desktop_strategy=None, close_terminal_strategy=None, open_strategy=None, server_info=None, screen_info_list=None, current_screen_info=None, show_modify_user_passwd=None, terminal_setup_passwd=None, conf_version=None, window_mode=None, disconnect_setup=None, show=None,):
+    def __init__(self, terminal_id=None, mac=None, ip_info=None, terminal_name=None, platform=None, soft_version=None, show_desktop_type=None, auto_desktop=None, close_desktop_strategy=None, close_terminal_strategy=None, open_strategy=None, server_info=None, screen_info_list=None, current_screen_info=None, show_modify_user_passwd=None, terminal_setup_passwd=None, conf_version=None, window_mode=None, disconnect_setup=None, show=None, hide_tools=None, top_level_service_ip=None, teacher_service_ip=None, classroom_num=None, multicast_ip=None, multicast_port=None,):
         self.terminal_id = terminal_id
         self.mac = mac
         self.ip_info = ip_info
@@ -2721,6 +2727,12 @@ class TerminalConf(object):
         self.window_mode = window_mode
         self.disconnect_setup = disconnect_setup
         self.show = show
+        self.hide_tools = hide_tools
+        self.top_level_service_ip = top_level_service_ip
+        self.teacher_service_ip = teacher_service_ip
+        self.classroom_num = classroom_num
+        self.multicast_ip = multicast_ip
+        self.multicast_port = multicast_port
 
     def read(self, iprot):
         if iprot._fast_decode is not None and isinstance(iprot.trans, TTransport.CReadableTransport) and self.thrift_spec is not None:
@@ -2842,6 +2854,36 @@ class TerminalConf(object):
                     self.show.read(iprot)
                 else:
                     iprot.skip(ftype)
+            elif fid == 21:
+                if ftype == TType.BOOL:
+                    self.hide_tools = iprot.readBool()
+                else:
+                    iprot.skip(ftype)
+            elif fid == 22:
+                if ftype == TType.STRING:
+                    self.top_level_service_ip = iprot.readString().decode('utf-8') if sys.version_info[0] == 2 else iprot.readString()
+                else:
+                    iprot.skip(ftype)
+            elif fid == 23:
+                if ftype == TType.STRING:
+                    self.teacher_service_ip = iprot.readString().decode('utf-8') if sys.version_info[0] == 2 else iprot.readString()
+                else:
+                    iprot.skip(ftype)
+            elif fid == 24:
+                if ftype == TType.I32:
+                    self.classroom_num = iprot.readI32()
+                else:
+                    iprot.skip(ftype)
+            elif fid == 25:
+                if ftype == TType.STRING:
+                    self.multicast_ip = iprot.readString().decode('utf-8') if sys.version_info[0] == 2 else iprot.readString()
+                else:
+                    iprot.skip(ftype)
+            elif fid == 26:
+                if ftype == TType.I32:
+                    self.multicast_port = iprot.readI32()
+                else:
+                    iprot.skip(ftype)
             else:
                 iprot.skip(ftype)
             iprot.readFieldEnd()
@@ -2934,6 +2976,30 @@ class TerminalConf(object):
         if self.show is not None:
             oprot.writeFieldBegin('show', TType.STRUCT, 20)
             self.show.write(oprot)
+            oprot.writeFieldEnd()
+        if self.hide_tools is not None:
+            oprot.writeFieldBegin('hide_tools', TType.BOOL, 21)
+            oprot.writeBool(self.hide_tools)
+            oprot.writeFieldEnd()
+        if self.top_level_service_ip is not None:
+            oprot.writeFieldBegin('top_level_service_ip', TType.STRING, 22)
+            oprot.writeString(self.top_level_service_ip.encode('utf-8') if sys.version_info[0] == 2 else self.top_level_service_ip)
+            oprot.writeFieldEnd()
+        if self.teacher_service_ip is not None:
+            oprot.writeFieldBegin('teacher_service_ip', TType.STRING, 23)
+            oprot.writeString(self.teacher_service_ip.encode('utf-8') if sys.version_info[0] == 2 else self.teacher_service_ip)
+            oprot.writeFieldEnd()
+        if self.classroom_num is not None:
+            oprot.writeFieldBegin('classroom_num', TType.I32, 24)
+            oprot.writeI32(self.classroom_num)
+            oprot.writeFieldEnd()
+        if self.multicast_ip is not None:
+            oprot.writeFieldBegin('multicast_ip', TType.STRING, 25)
+            oprot.writeString(self.multicast_ip.encode('utf-8') if sys.version_info[0] == 2 else self.multicast_ip)
+            oprot.writeFieldEnd()
+        if self.multicast_port is not None:
+            oprot.writeFieldBegin('multicast_port', TType.I32, 26)
+            oprot.writeI32(self.multicast_port)
             oprot.writeFieldEnd()
         oprot.writeFieldStop()
         oprot.writeStructEnd()
@@ -4040,6 +4106,12 @@ TerminalConf.thrift_spec = (
     (18, TType.I32, 'window_mode', None, None, ),  # 18
     (19, TType.STRUCT, 'disconnect_setup', [DisconnectSetup, None], None, ),  # 19
     (20, TType.STRUCT, 'show', [DisplaySetup, None], None, ),  # 20
+    (21, TType.BOOL, 'hide_tools', None, None, ),  # 21
+    (22, TType.STRING, 'top_level_service_ip', 'UTF8', None, ),  # 22
+    (23, TType.STRING, 'teacher_service_ip', 'UTF8', None, ),  # 23
+    (24, TType.I32, 'classroom_num', None, None, ),  # 24
+    (25, TType.STRING, 'multicast_ip', 'UTF8', None, ),  # 25
+    (26, TType.I32, 'multicast_port', None, None, ),  # 26
 )
 all_structs.append(FileCtrlInfo)
 FileCtrlInfo.thrift_spec = (

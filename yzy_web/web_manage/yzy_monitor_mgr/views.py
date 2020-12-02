@@ -1,16 +1,24 @@
 import traceback
 import logging
+import time
 from django.http import Http404, HttpResponseServerError
+from django.utils.encoding import escape_uri_path
+from django.http import JsonResponse, FileResponse
 from rest_framework.views import APIView
-from web_manage.common.http import server_post, monitor_post
+from web_manage.common.http import server_post, monitor_post, voi_terminal_post
 from web_manage.common.utils import JSONResponse, YzyWebPagination, get_error_result
 from web_manage.yzy_monitor_mgr.models import YzyNodes2
 from web_manage.common.general_query import GeneralQuery
-from web_manage.yzy_monitor_mgr.serializers import YzyNodesSerializer2
+from web_manage.yzy_monitor_mgr.serializers import YzyNodesSerializer2, YzyWarningInfoSerializer, \
+    YzyWarningInfoDesktopSerializer, TerminalMonitorSerializer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from web_manage.common import constants
-from web_manage.yzy_monitor_mgr.models import YzyNodeNetworkInfo2, YzyInterfaceIp2
+from web_manage.yzy_monitor_mgr.models import YzyNodeNetworkInfo2, YzyInterfaceIp2, YzyVoiTerminalPerformance, \
+    YzyVoiTerminalHardWare
 from django.db.models import Q
+from web_manage.yzy_edu_desktop_mgr.models import YzyInstances
+from web_manage.yzy_voi_edu_desktop_mgr.models import YzyVoiTerminal
+from web_manage.yzy_resource_mgr.models import YzyNodes
 
 
 logger = logging.getLogger(__name__)
@@ -141,8 +149,8 @@ class MonitorNodeCurPerformance(APIView):
 
     def post(self, request):
         try:
-            logger.info("post request: {}".format(request))
             data = request.data
+            logger.info("post request: %s", data)
             statis_period = data.get('statis_period', 0)
             node_uuid = data.get('node_uuid', "")
             is_all_nodes = data.get('is_all_nodes', 0)
@@ -202,3 +210,143 @@ class MonitorNodeCurPerformance(APIView):
             logger.error("get node history performance data error:%s", e, exc_info=True)
             ret = get_error_result("OtherError")
             return JSONResponse(ret)
+
+
+class WarningInformation(APIView):
+    """
+    预警信息-云桌面在线监控中心
+    """
+
+    def get(self, request, *args, **kwargs):
+        search_type = request.GET.get("search_type")
+        uuid = request.GET.get("uuid")
+        if search_type == "detail":
+            return self.get_desktop_info(request, uuid)
+        else:
+            return self.get_node_info(request)
+
+    def get_node_info(self, request):
+        logger.debug("start get node info")
+        resp = get_error_result("Success")
+        try:
+            nodes = YzyNodes.objects.filter(deleted=False).all()
+            power_nodes = nodes.exclude(status=constants.STATUS_SHUTDOWN).count()
+            resp['data'] = {}
+            resp['data']['curr_time'] = time.strftime('%Y/%m/%d %H:%M', time.localtime())
+            resp['data']['node_total'] = len(nodes)
+            resp['data']['power_node'] = power_nodes
+            resp['data']['shutdown_node'] = len(nodes) - power_nodes
+
+            instances = YzyInstances.objects.filter(deleted=False).all()
+            # voi_instances = YzyVoiTerminal.objects.filter(deleted=False).all()
+            power_desktop = instances.filter(status=constants.STATUS_ACTIVE).count()
+            error_desktop = instances.exclude(message='').count()
+            resp['data']['desktop_total'] = len(instances)
+            resp['data']['power_desktop'] = power_desktop
+            resp['data']['shutdown_desktop'] = len(instances) - power_desktop
+            resp['data']['error_desktop'] = error_desktop
+
+            page = YzyWebPagination()
+            controller_nodes = page.paginate_queryset(queryset=nodes, request=request, view=self)
+            ser = YzyWarningInfoSerializer(instance=controller_nodes, many=True, context={'request': request})
+            resp['data']['nodes'] = ser.data
+            logger.info("get node info success: %s", nodes)
+            return JSONResponse(resp)
+        except Exception as e:
+            logger.error("get node info error:%s", e, exc_info=True)
+            ret = get_error_result("OtherError")
+            return JSONResponse(ret)
+
+    def get_desktop_info(self, request, uuid):
+        logger.debug("start get instance info")
+        resp = get_error_result("Success")
+        try:
+            node = YzyNodes.objects.filter(deleted=False, uuid=uuid).first()
+            if not node:
+                logger.error("get desktop info error: ParameterError")
+                ret = get_error_result("ParameterError")
+                return JSONResponse(ret)
+            resp['data'] = {}
+            instances = YzyInstances.objects.filter(deleted=False, host=node).all()
+            power_instance = instances.filter(status=constants.STATUS_ACTIVE).count()
+            error_instance = instances.exclude(message='').count()
+            resp['data']['node_name'] = node.name
+            resp['data']['power_instance'] = power_instance
+            resp['data']['error_instance'] = error_instance
+            resp['data']['total_instance'] = len(instances)
+            resp['data']['shutdown_instance'] = len(instances) - power_instance
+
+            page = YzyWebPagination()
+            desktops = page.paginate_queryset(queryset=instances, request=request, view=self)
+            ser = YzyWarningInfoDesktopSerializer(instance=desktops, many=True, context={'request': request})
+            resp['data']['instances'] = ser.data
+            logger.info("get instance info success: %s", desktops)
+            return JSONResponse(resp)
+        except Exception as e:
+            logger.error("get instance info error:%s", e, exc_info=True)
+            ret = get_error_result("OtherError")
+            return JSONResponse(ret)
+
+
+class MonitorTerminal(APIView):
+    """
+    终端监控
+    """
+
+    def get(self, request, *args, **kwargs):
+        terminal_uuid = request.GET.get("terminal_uuid")
+        terminal = YzyVoiTerminalPerformance.objects.filter(deleted=False, terminal_uuid=terminal_uuid).first()
+        terminal_obj = YzyVoiTerminal.objects.filter(deleted=False, uuid=terminal_uuid).first()
+        if not terminal:
+            logger.error("get terminal monitor error: param error")
+            return JSONResponse(get_error_result("ParameterError"))
+        if not terminal_obj:
+            logger.error("get terminal monitor error: terminal not exist")
+            return JSONResponse(get_error_result("TerminalNotExistError"))
+        if not terminal_obj.status:
+            logger.error("get terminal monitor error: terminal status inactive")
+            return JSONResponse(get_error_result("TerminalOfflineError"))
+        ser = TerminalMonitorSerializer(instance=terminal, context={"request": request})
+        return JSONResponse(ser.data)
+
+    def post(self, request):
+        terminal_uuid = request.data.get("uuid")
+        option = request.data.get("option")
+        if not (terminal_uuid and option):
+            logger.error("post request error: param error")
+            return JSONResponse(get_error_result("ParameterError"))
+        if option == "terminal_hardware":
+            return self.get_hardware(terminal_uuid)
+        elif option == "export_resources":
+            return self.get_terminal_resources(terminal_uuid)
+        else:
+            logger.error("option error:%s", option)
+            return JSONResponse(get_error_result("ParameterError"))
+
+    def get_terminal_resources(self, terminal_uuid):
+        req_data = {
+            "terminal_uuid": terminal_uuid
+        }
+        ret = server_post("/api/v1/monitor/terminal/export_resources", req_data)
+        if ret.get("code", -1) == 0:
+            _file = constants.TERMINAL_RESOURCES_PATH.split("/")[-1]
+            response = FileResponse(open(constants.TERMINAL_RESOURCES_PATH, 'rb'))
+            response['content_type'] = "application/octet-stream"
+            response['Content-Disposition'] = "attachment; filename*=utf-8''{}".format(escape_uri_path(_file))
+            return response
+        return JSONResponse(ret)
+
+    def get_hardware(self, terminal_uuid):
+        req_data = {
+            "terminal_uuid": terminal_uuid
+        }
+        ret = server_post("/api/v1/monitor/terminal/terminal_hardware", req_data)
+        if ret.get("code", -1) == 0:
+            _file = constants.TERMINAL_HARDWARE_PATH.split("/")[-1]
+            response = FileResponse(open(constants.TERMINAL_HARDWARE_PATH, 'rb'))
+            response['content_type'] = "application/octet-stream"
+            response['Content-Disposition'] = "attachment; filename*=utf-8''{}".format(escape_uri_path(_file))
+            return response
+        return JSONResponse(ret)
+
+

@@ -2,19 +2,22 @@ import os
 import logging
 import string
 import re
+import base64
+import shutil
 import json
 from threading import  Thread
 from datetime import datetime
 from yzy_server.database import apis as db_api
 from yzy_server.database import models
-from yzy_server.crontab_tasks import YzyAPScheduler
 from common import constants
 from common import cmdutils
 from common.errcode import get_error_result
-from common.config import SERVER_CONF, FileOp
+from common.config import FileOp
 from common.utils import create_uuid, compute_post, find_ips, check_node_status, single_lock,\
                         size_to_G, voi_terminal_post, gi_to_section, bytes_to_section, section_to_G
 from .desktop_ctl import BaseController, generate_mac
+from yzy_server.utils import sync_func_to_ha_backup, sync_voi_file_to_ha_backup_node, sync_torrent_to_ha_backup_node, \
+    sync_compute_post_to_ha_backup_with_network_info
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +35,8 @@ class VoiTemplateController(BaseController):
         }
         self.disk_type_dict = {
             constants.IMAGE_TYPE_SYSTEM: 0,
-            constants.IMAGE_TYPE_DATA: 1
+            constants.IMAGE_TYPE_DATA: 1,
+            constants.IMAGE_TYPE_SHARE: 2
         }
 
     def get_qcow2_section(self, qcow2_file, default):
@@ -78,15 +82,20 @@ class VoiTemplateController(BaseController):
                 "configdrive": configdrive
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_compute_post_to_ha_backup_with_network_info(command_data, timeout=600)
+
         logger.info("create instance %s in node %s", instance_info['uuid'], ipaddr)
         rep_json = compute_post(ipaddr, command_data, timeout=600)
+
         if rep_json.get("code", -1) != 0:
             logger.error("create instance:%s failed, node:%s, error:%s", instance_info['name'], ipaddr, rep_json.get('data'))
             message = rep_json['data'] if rep_json.get('data', None) else rep_json['msg']
             raise Exception(message)
         return rep_json
 
-    def create_disk_info(self, data, version, sys_base, data_base, disk_generate=True):
+    def create_voi_disk_info(self, data, version, sys_base, data_base, image_path=None, disk_generate=True):
         """
         生成模板的磁盘信息
         :return:
@@ -95,16 +104,18 @@ class VoiTemplateController(BaseController):
                     "uuid": "dfcd91e8-30ed-11ea-9764-000c2902e179",
                     "dev": "vda",
                     "boot_index": 0,
-                    "image_id": "196df26e-2b92-11ea-a62d-000c29b3ddb9",
-                    "image_version": 0,
-                    "base_path": "/opt/ssd/instances"
+                    "size": "50G",
+                    "disk_file": "",
+                    "image_file": "",
+                    "backing_file": ""
                 },
                 {
                     "uuid": "f613f8ac-30ed-11ea-9764-000c2902e179",
                     "dev": "vdb",
                     "boot_index": -1,
                     "size": "50G",
-                    "base_path": "/opt/ssd/datas"
+                    "disk_file": "",
+                    "backing_file": ""
                 },
                 ...
             ]
@@ -115,16 +126,22 @@ class VoiTemplateController(BaseController):
             for disk in data['data_disks']:
                 _disk_list.append(disk)
             return _disk_list
+        backing_dir = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
         system_disk_dict = {
             "uuid": data['system_disk']['uuid'],
             "bus": data['system_disk'].get("bus", "sata"),
             "dev": "sda",
             "boot_index": 0,
             "size": "%dG" % int(data['system_disk']['size']),
+            "disk_file": "%s/%s%s" % (sys_base, constants.VOI_FILE_PREFIX, data['system_disk']['uuid']),
+            "backing_file": os.path.join(backing_dir,
+                                         constants.VOI_BASE_PREFIX % str(version) + data['system_disk']['uuid']),
             "image_id": data['system_disk'].get('image_id', ''),
             "image_version": version,
             "base_path": sys_base
         }
+        if image_path:
+            system_disk_dict['image_file'] = image_path
         _disk_list.append(system_disk_dict)
 
         zm = string.ascii_lowercase
@@ -133,35 +150,26 @@ class VoiTemplateController(BaseController):
             _d = dict()
             inx = int(disk["inx"])
             size = int(disk["size"])
-            _d["uuid"] = create_uuid()
+            disk_uuid = create_uuid()
+            _d["uuid"] = disk_uuid
             _d["bus"] = disk.get('bus', 'sata')
             _d["boot_index"] = inx + 1
             _d["size"] = "%dG" % size
             _d["dev"] = "sd%s" % zm[inx + 1]
             _d['base_path'] = data_base
+            _d['disk_file'] = "%s/%s%s" % (data_base, constants.VOI_FILE_PREFIX, disk_uuid)
+            _d['backing_file'] = os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                              constants.VOI_BASE_PREFIX % str(version) + disk_uuid)
             _disk_list.append(_d)
-        # if data.get('iso', None):
-        #     _disk_list.append({
-        #         "bus": "ide",
-        #         "dev": "hdb",
-        #         "type": "cdrom",
-        #         "path": data['iso']
-        #     })
-        #     _disk_list.append({
-        #         "bus": "ide",
-        #         "dev": "hdc",
-        #         "type": "cdrom",
-        #         "path": constants.VIRTIO_PATH
-        #     })
         logger.debug("get disk info %s", _disk_list)
         return _disk_list
 
-    def get_template_sys_space(self, node_uuid):
-        storages = db_api.get_node_storage_all({'node_uuid': node_uuid})
-        for storage in storages:
-            if str(constants.TEMPLATE_SYS) in storage.role:
-                free = round(storage.free/1024/1024/1024, 2)
-                return free
+    # def get_template_sys_space(self, node_uuid):
+    #     storages = db_api.get_node_storage_all({'node_uuid': node_uuid})
+    #     for storage in storages:
+    #         if str(constants.TEMPLATE_SYS) in storage.role:
+    #             free = round(storage.free/1024/1024/1024, 2)
+    #             return free
 
     def create_template(self, data, disk_generate=True):
         """
@@ -221,11 +229,13 @@ class VoiTemplateController(BaseController):
         else:
             node = db_api.get_controller_node()
         # 检查磁盘空间是否足够
+        sys_storage, data_storage = self._get_template_storage(node.uuid)
+        if not (sys_storage and data_storage):
+            return get_error_result("InstancePathNotExist")
         image_id = data['system_disk'].get('image_id', None)
         if image_id:
             image = db_api.get_image_with_first({'uuid': image_id})
-            free = self.get_template_sys_space(node.uuid)
-            if free and image.size > free:
+            if image.size > sys_storage['free']:
                 logger.exception("the disk size in not enough, return")
                 return get_error_result("SpaceNotEnough")
 
@@ -282,20 +292,26 @@ class VoiTemplateController(BaseController):
         # disk_info
         if not data['system_disk'].get('uuid'):
             data['system_disk']['uuid'] = create_uuid()
-        sys_base, data_base = self._get_template_storage_path()
-        disk_info = self.create_disk_info(data, version, sys_base, data_base, disk_generate=disk_generate)
+        data['sys_storage'] = sys_storage['uuid']
+        data['data_storage'] = data_storage['uuid']
+        if image_id:
+            disk_info = self.create_voi_disk_info(data, version, sys_storage['path'], data_storage['path'],
+                                                  image_path=image.path, disk_generate=disk_generate)
+        else:
+            disk_info = self.create_voi_disk_info(data, version, sys_storage['path'],
+                                                  data_storage['path'], disk_generate=disk_generate)
 
         # 磁盘记录数据库
         disks = list()
         sys_disk = disk_info[0]
-        file_name = constants.VOI_BASE_PREFIX % str(0) + sys_disk["uuid"]
-        backing_file = os.path.join(os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME), file_name)
+        # file_name = constants.VOI_BASE_PREFIX % str(0) + sys_disk["uuid"]
+        # backing_file = os.path.join(os.path.join(sys_storage['path'], constants.IMAGE_CACHE_DIRECTORY_NAME), file_name)
         # self.get_qcow2_section(backing_file, int(sys_disk['size'].replace("G","")))
         sys_info = {
             "uuid": sys_disk['uuid'],
             "type": constants.IMAGE_TYPE_SYSTEM,
             "device_name": sys_disk['dev'],
-            "image_id": sys_disk['image_id'],
+            "image_id": data['system_disk']['image_id'],
             "instance_uuid": data['uuid'],
             "boot_index": sys_disk['boot_index'],
             "size": int(sys_disk['size'].replace('G', '')),
@@ -379,19 +395,29 @@ class VoiTemplateController(BaseController):
         }
         if not data.get('iso', None):
             task = Thread(target=self.create_thread,
-                          args=(node.ip, template.uuid, instance_info, network_info, disk_info, False, False, configdrive))
+                          args=(node.ip, template.uuid, instance_info, network_info, disk_info, False, False,
+                                configdrive, sys_storage["uuid"], data_storage["uuid"]))
             task.start()
         else:
-            result = self.create_thread(node.ip, template.uuid, instance_info,
-                                        network_info, disk_info, iso=True, configdrive=configdrive)
+            result = self.create_thread(node.ip, template.uuid, instance_info, network_info, disk_info, iso=True,
+                                        configdrive=configdrive, sys_base=sys_storage["uuid"], data_base=data_storage["uuid"])
             if not result:
+                devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
+                for disk in devices:
+                    tasks = db_api.get_task_all({"image_id": disk.uuid})
+                    for task in tasks:
+                        task.soft_delete()
+                    disk.soft_delete()
+                binds = db_api.get_item_with_all(models.YzyVoiTemplateGroups, {"template_uuid": template.uuid})
+                for bind in binds:
+                    bind.soft_delete()
                 template.soft_delete()
                 return get_error_result("TemplateCreateFail", name=template.name)
 
         return get_error_result("Success", ret)
 
     def create_thread(self, ipaddr, template_uuid, instance_info, network_info, disk_info,
-                      power_on=False, iso=False, configdrive=True):
+                      power_on=False, iso=False, configdrive=True, sys_base=None, data_base=None):
         try:
             logger.info("start create template thread")
             template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
@@ -404,20 +430,29 @@ class VoiTemplateController(BaseController):
             return False
         # iso安装时，如果没有保存，状态一直是installing
         if not iso:
+            ret = self.create_torrent_disks(template_uuid)
+            if ret.get('code', -1) != 0:
+                template.status = constants.STATUS_ERROR
+                template.soft_update()
+                logger.error("template: {} create torrent error".format(template_uuid))
+                return False
+
+            # 种子生成完后在修改状态
             if power_on:
                 template.status = constants.STATUS_ACTIVE
             else:
                 template.status = constants.STATUS_INACTIVE
-        logger.info("update template status to %s", template.status)
-        template.soft_update()
+
+            logger.info("update template status to %s", template.status)
+            template.soft_update()
         # # 更新磁盘的扇区
         # devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
         # for dev in devices:
         #     if dev.type == constants.IMAGE_TYPE_SYSTEM
         # 生成种子文件
-        task = Thread(target=self.create_torrent_disks, args=(template_uuid,))
-        task.start()
-        logger.info("create template thread end")
+        # task = Thread(target=self.create_torrent_disks, args=(template_uuid,))
+        # task.start()
+        # logger.info("create template thread end")
         return True
 
     def allocate_ipaddr(self, network_uuid):
@@ -440,16 +475,21 @@ class VoiTemplateController(BaseController):
         if template_exist:
             logger.error("template: %s already exist", data['name'])
             return get_error_result("TemplateAlreadyExist", name=data['name'])
+        sys_storage, data_storage = self._get_template_storage()
+        if not (sys_storage and data_storage):
+            return get_error_result("InstancePathNotExist")
         # 1、默认网络从后往前分配 2、无可用网络则设置为未分配
         networks = db_api.get_network_all({"default": 1})
-        network_uuid = networks[0].uuid
         subnet_uuid = None
         ipaddr = ""
+        sub = None
+        network_uuid = ""
         # 有默认网络，则从默认网络分配，子网段中从后向前分配
         if networks:
+            network_uuid = networks[0].uuid
             ipaddr, sub = self.allocate_ipaddr(networks[0].uuid)
         if ipaddr:
-            network_uuid = networks[0].uuid
+            # network_uuid = networks[0].uuid
             subnet_uuid = sub
         else:
             networks = db_api.get_network_all({})
@@ -459,6 +499,7 @@ class VoiTemplateController(BaseController):
                     network_uuid = network.uuid
                     subnet_uuid = sub
                     break
+                    
         logger.info("the network info, network_uuid:%s, subnet_uuid:%s, ipaddr:%s", network_uuid, subnet_uuid, ipaddr)
 
         # 如果没有指定节点，则模板默认放在主控节点
@@ -469,12 +510,7 @@ class VoiTemplateController(BaseController):
 
         # 保证上传存放的资源池存在
         pool_name = data.get('pool_name', 'template-voi')
-        template_sys = db_api.get_template_sys_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        pool_path = os.path.join(sys_base, constants.VOI_POOL_DIR_NAME)
+        pool_path = os.path.join(sys_storage['path'], constants.VOI_POOL_DIR_NAME)
         self._create_pool(node.ip, pool_name, pool_path)
         # 检查磁盘空间是否足够
         # free = self.get_template_sys_space(node.uuid)
@@ -539,15 +575,19 @@ class VoiTemplateController(BaseController):
                 "group_uuid": group_uuid
             })
         os_type = data.get('os_type', 'windows_7_x64')
+        terminal_mac = data.get("mac", "")
         values = {
             "uuid": template_uuid,
             "name": data['name'],
             "desc": data.get("desc", ""),
             "os_type": os_type,
             "owner_id": 1,
+            "terminal_mac": terminal_mac,
             "host_uuid": node.uuid,
             "network_uuid": network_uuid,
             "subnet_uuid": subnet_uuid,
+            "sys_storage": sys_storage['uuid'],
+            "data_storage": data_storage['uuid'],
             "bind_ip": ipaddr,
             "vcpu": 2 if os_type.startswith("windows_7") else 4,
             "ram": 2 if os_type.startswith("windows_7") else 4,
@@ -576,13 +616,11 @@ class VoiTemplateController(BaseController):
             logger.error("template upload error, delete")
             self.delete_template(device.instance_uuid)
             return get_error_result()
+        sys_storage, data_storage = self._get_template_storage()
+        if not (sys_storage and data_storage):
+            return get_error_result("InstancePathNotExist")
 
-        template_sys = db_api.get_template_sys_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        pool_path = os.path.join(sys_base, constants.VOI_POOL_DIR_NAME)
+        pool_path = os.path.join(sys_storage['path'], constants.VOI_POOL_DIR_NAME)
         upload_path = os.path.join(pool_path, disk_uuid)
         device.progress = data['progress']
         device.upload_path = upload_path
@@ -609,6 +647,9 @@ class VoiTemplateController(BaseController):
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
         if not template:
             return get_error_result("TemplateNotExist", name="")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         subnet = None
         if template.subnet_uuid:
             subnet = db_api.get_subnet_by_uuid(template.subnet_uuid)
@@ -632,9 +673,9 @@ class VoiTemplateController(BaseController):
 
         # disk_info
         disk_info = list()
-        sys_base, data_base = self._get_template_storage_path()
         devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
         for device in devices:
+            base_path = sys_base if device.type == constants.IMAGE_TYPE_SYSTEM else data_base
             disk_info.append({
                 "upload": device.upload_path + '-sda',
                 "uuid": device.uuid,
@@ -642,7 +683,10 @@ class VoiTemplateController(BaseController):
                 "dev": device.device_name,
                 "boot_index": device.boot_index,
                 "size": "%dG" % int(device.size),
-                "base_path": sys_base if device.type == constants.IMAGE_TYPE_SYSTEM else data_base
+                "base_path": base_path,
+                "disk_file": "%s/%s%s" % (base_path, constants.VOI_FILE_PREFIX, device.uuid),
+                "backing_file": os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                             constants.VOI_BASE_PREFIX % str(0) + device.uuid)
             })
         logger.info("get disk info:%s", disk_info)
         # instance info
@@ -671,20 +715,16 @@ class VoiTemplateController(BaseController):
             "type": "cdrom",
             "path": ""
         })
-        result = self.create_thread(node.ip, template.uuid, instance_info, network_info, disk_info, configdrive=configdrive)
+
+        # 如果启用了HA，把VOI模板base盘、差异盘、实际启动盘同步给备控，未启用则不同步
+        # 此处必须为阻塞同步（use_thread=False），否则很可能调用create_thread时磁盘还没有同步完
+        sync_voi_file_to_ha_backup_node(template_uuid, sys_base, data_base, download_base_disk=True, use_thread=False)
+
+        result = self.create_thread(node.ip, template.uuid, instance_info, network_info, disk_info,
+                                    configdrive=configdrive, sys_base=sys_base, data_base=data_base)
         if not result:
             self.delete_template(template_uuid)
             return get_error_result("TemplateCreateFail", name=template.name)
-        # todo 生成种子文件
-        # disks = list()
-        # for device in devices:
-        #     voi_device_name = "voi_0_%s" % device.uuid
-        #     base_path = sys_base if device.type == constants.IMAGE_TYPE_SYSTEM else data_base
-        #     disk_path = os.path.join(base_path, voi_device_name)
-        #     if os.path.exists(disk_path):
-        #         disks.append(disk_path)
-        task = Thread(target=self.create_torrent_disks, args=(template_uuid,))
-        task.start()
         logger.info("template upload end success !!!!")
         return get_error_result()
 
@@ -693,10 +733,10 @@ class VoiTemplateController(BaseController):
         :param disks:
         :return:
         """
-        logger.info("threading create disk torrent: %s"% template_uuid)
+        logger.info("threading create disk torrent: %s", template_uuid)
         try:
             template = db_api.get_voi_instance_template(template_uuid)
-            sys_base, data_base = self._get_template_storage_path()
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
 
             devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
             operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
@@ -727,21 +767,41 @@ class VoiTemplateController(BaseController):
                 }
             }
             ret = voi_terminal_post("/api/v1/voi/terminal/command/", data, 180)
+            logging.info("voi_terminal_post ret: %s" % ret)
+
+            for _d in disks:
+                logger.info("os.path.exists(%s): %s", _d["torrent_path"], os.path.exists(_d["torrent_path"]))
+            # 如果启用了HA，把VOI模板的种子文件同步给备控，未启用则不同步
+            sync_torrent_to_ha_backup_node([_d["torrent_path"] for _d in disks])
+
             if ret.get("code", -1) != 0:
                 logger.error("threading create disk torrent :%s", ret)
                 return ret
-            logger.info("threading create disk torrents success")
+            logger.info("threading create disk torrents success, template_uuid: %s" % template_uuid)
             return get_error_result("Success")
         except Exception as e:
             logger.error("%s" % e, exc_info=True)
-            return get_error_result("OtherError")
+            return get_error_result("TorrentCreateFail")
 
     def upload_cancel(self, data):
         template_uuid = data.get('uuid', "")
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
         if not template:
             return get_error_result("TemplateNotExist", name=data.get('name', ""))
+        terminal_mac = template.terminal_mac
+        # 通知终端上传终止
+        data = {
+            "command": "cancel_p_to_v",
+            "data": {
+                "mac_list": terminal_mac
+            }
+        }
+        ret = voi_terminal_post("/api/v1/voi/terminal/command/", data, 180)
+        if ret.get("code", -1) != 0:
+            logger.error("upload cancel %s terminal agent return %s", data, ret)
+            return ret
         self.delete_template(template_uuid)
+        logger.debug("voi template %s, mac %s, upload cancel success", template_uuid, terminal_mac)
         return get_error_result()
 
     def start_template(self, template_uuid):
@@ -812,12 +872,13 @@ class VoiTemplateController(BaseController):
         if hard:
             rep_json = self._stop_instance(node.ip, instance_info, timeout=0)
         else:
-            rep_json = self._stop_instance(node.ip, instance_info, timeout=180)
+            rep_json = self._stop_instance(node.ip, instance_info, timeout=120)
         if rep_json.get("code", -1) != 0:
             logger.error("stop template: %s fail:%s", template.uuid, rep_json['msg'])
             return get_error_result("TemplateStopError", name=template.name)
-        template.status = constants.STATUS_INACTIVE
-        template.soft_update()
+        if template.status != constants.STATUS_INSTALL:
+            template.status = constants.STATUS_INACTIVE
+            template.soft_update()
         logger.info("stop voi template %s success", instance_info)
         return get_error_result("Success", rep_json.get('data'))
 
@@ -847,8 +908,9 @@ class VoiTemplateController(BaseController):
             template.status = constants.STATUS_ERROR
             template.soft_update()
             return get_error_result("TemplateStartFail", name=template.name)
-        template.status = constants.STATUS_ACTIVE
-        template.soft_update()
+        if template.status != constants.STATUS_INSTALL:
+            template.status = constants.STATUS_ACTIVE
+            template.soft_update()
         logger.info("reboot voi template %s success", instance_info)
         return get_error_result("Success", rep_json.get('data'))
 
@@ -882,12 +944,13 @@ class VoiTemplateController(BaseController):
             }
             images.append(info)
             for operate in operates:
-                images.append(
-                    {
-                        "image_path": os.path.join(backing_dir,
-                                                   constants.VOI_BASE_PREFIX % str(operate.version) + disk.uuid)
-                    }
-                )
+                _image_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(operate.version) + disk.uuid)
+                if os.path.exists(_image_path):
+                    images.append(
+                        {
+                            "image_path": _image_path
+                        }
+                    )
         logger.info("get voi template delete image info:%s", images)
         return images
 
@@ -907,9 +970,12 @@ class VoiTemplateController(BaseController):
             if desktops:
                 return get_error_result("TemplateInUse", name=template.name)
 
+        sys_base, data_base = self._get_template_storage()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
+
         logger.info("delete voi template, uuid:%s, name:%s", template_uuid, template.name)
-        sys_base, data_base = self._get_template_storage_path()
-        images = self._get_deleted_images(template, sys_base, data_base)
+        images = self._get_deleted_images(template, sys_base['path'], data_base['path'])
         command_data = {
             "command": "delete",
             "handler": "VoiHandler",
@@ -921,6 +987,10 @@ class VoiTemplateController(BaseController):
                 "images": images
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         node = db_api.get_controller_node()
         logger.info("delete the template begin, node:%s", node.ip)
         rep_json = compute_post(node.ip, command_data)
@@ -953,9 +1023,11 @@ class VoiTemplateController(BaseController):
         if not template:
             logger.error("voi template: %s not exist", template_uuid)
             return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
 
         logger.info("reset voi template:%s", template_uuid)
-        sys_base, data_base = self._get_template_storage_path()
         images = self._get_sync_images(template, sys_base, data_base)
         command_data = {
             "command": "reset",
@@ -968,6 +1040,10 @@ class VoiTemplateController(BaseController):
                 "images": images
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         node = db_api.get_node_with_first({'uuid': template.host_uuid})
         logger.info("reset the voi template begin, node:%s", node.ip)
         rep_json = compute_post(node.ip, command_data)
@@ -975,7 +1051,8 @@ class VoiTemplateController(BaseController):
             logger.error("reset voi template: %s fail:%s", template.uuid, rep_json['msg'])
             return get_error_result("TemplateResetError", name=template.name)
 
-        template.status = constants.STATUS_INACTIVE
+        if template.status != constants.STATUS_INSTALL:
+            template.status = constants.STATUS_INACTIVE
         template.attach = ""
         template.soft_update()
         logger.info("reset the template success")
@@ -1017,7 +1094,10 @@ class VoiTemplateController(BaseController):
                     'bus': 'sata',
                     'type': 'disk',
                     'size': '%sG' % disk['size'],
-                    'base_path': data_base
+                    'base_path': data_base,
+                    'disk_file': os.path.join(data_base, constants.VOI_FILE_PREFIX + disk_uuid),
+                    'backing_file': os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                                 constants.VOI_BASE_PREFIX % str(0) + disk_uuid)
                 }
                 rep_json = self.create_and_attach_file(node.ip, instance_info, disk_info, template.version)
                 if rep_json.get("code", -1) != 0:
@@ -1043,11 +1123,14 @@ class VoiTemplateController(BaseController):
                     if int(disk['size']) != int(device.size):
                         if int(disk['size']) < int(device.size):
                             return get_error_result("TemplateDiskSizeError")
+                        base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk['type'] else data_base
                         logger.info("disk %s extend size from %s to %s", device.device_name, device.size, disk['size'])
                         image = {
                             "image_id": disk['uuid'],
-                            "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == disk['type'] else data_base,
-                            "size": int(disk['size']) - int(device.size)
+                            "base_path": base_path,
+                            "disk_file": os.path.join(base_path, constants.VOI_FILE_PREFIX + disk['uuid']),
+                            "size": int(disk['size']) - int(device.size),
+                            "tag_size": int(disk['size'])
                         }
                         images.append(image)
                         device.size = int(disk['size'])
@@ -1061,6 +1144,10 @@ class VoiTemplateController(BaseController):
                     "images": images
                 }
             }
+
+            # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+            sync_func_to_ha_backup(compute_post, command_data)
+
             rep_json = compute_post(node.ip, command_data)
             if rep_json.get("code", -1) != 0:
                 logger.error("resize disk failed, node:%s, error:%s", node.ip, rep_json.get('data'))
@@ -1091,6 +1178,10 @@ class VoiTemplateController(BaseController):
                     "ram": int(ram * constants.Ki) if ram else None
                 }
             }
+
+            # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+            sync_func_to_ha_backup(compute_post, command_data)
+
             rep_json = compute_post(node.ip, command_data)
             if rep_json.get("code", -1) != 0:
                 logger.error("set vcpu and ram failed, node:%s, error:%s", node.ip, rep_json.get('data'))
@@ -1122,6 +1213,9 @@ class VoiTemplateController(BaseController):
                 return get_error_result("SubnetNotExist")
         else:
             subnet = None
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
 
         value = data['value']
         if not subnet:
@@ -1147,17 +1241,22 @@ class VoiTemplateController(BaseController):
         if template.status == constants.STATUS_ACTIVE:
             ret = self.stop_template(template_uuid)
             if ret.get('code') != 0:
+                template.status = constants.STATUS_ERROR
+                template.soft_update()
                 return ret
         try:
-            # cpu和内存的修改
+            # 模板
+            # cpu和内存的修改（备控同步操作）
             rep_json = self.update_ram_and_vcpu(value, template)
             if rep_json.get('code') != 0:
                 return rep_json
 
-            sys_base, data_base = self._get_template_storage_path()
+            # 增加数据盘（备控同步操作）
             rep_json = self.find_add_disk(value, template, data_base)
             if rep_json.get('code') != 0:
                 return rep_json
+
+            # 磁盘扩容（备控同步操作）
             rep_json = self.find_extend_disk(template, value, sys_base, data_base)
             if rep_json.get('code') != 0:
                 return rep_json
@@ -1170,7 +1269,8 @@ class VoiTemplateController(BaseController):
                 "bind_ip": value.get('bind_ip', ''),
                 "ram": value['ram'],
                 "vcpu": value['vcpu'],
-                "all_group": False if value.get('groups', None) else True
+                "all_group": False if value.get('groups', None) else True,
+                "status": constants.STATUS_INACTIVE
             }
             # 桌面组绑定的处理
             binds = list()
@@ -1203,9 +1303,16 @@ class VoiTemplateController(BaseController):
         except Exception as e:
             logger.error("update voi template %s failed:%s", template_uuid, e, exc_info=True)
             return get_error_result("TemplateUpdateError", name=template.name)
-        _task = Thread(target=self.create_torrent_disks, args=(template_uuid,))
-        _task.start()
+
+        ret = self.create_torrent_disks(template_uuid)
+
+        if ret.get('code', -1) != 0:
+            template.status = constants.STATUS_ERROR
+            template.soft_update()
+            logger.error("template: {} create torrent error".format(template_uuid))
+            return get_error_result("TorrentCreateFail")
         logger.info("update voi template success, uuid:%s, name:%s", template_uuid, template.name)
+
         return get_error_result("Success")
 
     def convert(self, ipaddr, image):
@@ -1220,7 +1327,11 @@ class VoiTemplateController(BaseController):
                 "template": image
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data, timeout=1200)
+
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("convert the disk file finished, node:%s", ipaddr)
         return rep_json
 
@@ -1235,7 +1346,7 @@ class VoiTemplateController(BaseController):
                 "disk_size": disk_size
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("write head to image %s finished, node:%s, return:%s", image_path, ipaddr, rep_json)
         return rep_json
 
@@ -1251,21 +1362,26 @@ class VoiTemplateController(BaseController):
                 "images": images
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data, timeout=1200, use_thread=False)
+
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("copy the template finished, node:%s", ipaddr)
         return rep_json
 
-    def save(self, ipaddr, version, images):
+    def save(self, ipaddr, version, images, is_upload=False):
         """模板更新"""
         command_data = {
             "command": "save",
             "handler": "VoiHandler",
             "data": {
                 "version": version,
+                "is_upload": is_upload,
                 "images": images
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("save the image end, version:%s, images:%s", version, images)
         return rep_json
 
@@ -1279,6 +1395,10 @@ class VoiTemplateController(BaseController):
                 "configdrive": configdrive
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         rep_json = compute_post(ipaddr, command_data)
         logger.info("detach_cdrom end, instance:%s", instance_info)
         return rep_json
@@ -1294,6 +1414,10 @@ class VoiTemplateController(BaseController):
                 "images": images
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         rep_json = compute_post(ipaddr, command_data)
         logger.info("save the image end, rollback_version:%s, cur_version, images:%s",
                     rollback_version, cur_version, images)
@@ -1309,7 +1433,11 @@ class VoiTemplateController(BaseController):
                 "version": version
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data, timeout=1200)
+
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("create disk file:%s, host:%s", disk_info, ipaddr)
         rep_json['ipaddr'] = ipaddr
         return rep_json
@@ -1324,7 +1452,7 @@ class VoiTemplateController(BaseController):
                 "version": version
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("create disk file:%s, host:%s", disk_info, ipaddr)
         rep_json['ipaddr'] = ipaddr
         return rep_json
@@ -1338,6 +1466,10 @@ class VoiTemplateController(BaseController):
                 "path": path
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         logger.info("attach %s device in node %s", instance_info['uuid'], ipaddr)
         rep_json = compute_post(ipaddr, command_data)
         if rep_json.get("code", -1) != 0:
@@ -1352,6 +1484,10 @@ class VoiTemplateController(BaseController):
                 "instance": instance_info
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         logger.info("detach %s device in node %s", instance_info['uuid'], ipaddr)
         rep_json = compute_post(ipaddr, command_data)
         if rep_json.get("code", -1) != 0:
@@ -1370,6 +1506,10 @@ class VoiTemplateController(BaseController):
                 "path": pool_path
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         rep_json = compute_post(ipaddr, command_data)
         logger.info("create the storage pool finished, node:%s", ipaddr)
         return rep_json
@@ -1382,6 +1522,10 @@ class VoiTemplateController(BaseController):
                 "instance": instance_info
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data)
+
         logger.info("teamplate send key in node %s", instance_info['uuid'], ipaddr)
         rep_json = compute_post(ipaddr, command_data)
         if rep_json.get("code", -1) != 0:
@@ -1419,14 +1563,19 @@ class VoiTemplateController(BaseController):
             base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
             backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
             file_name = constants.VOI_FILE_PREFIX + disk.uuid
+            backing_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(template.version) + disk.uuid)
+            if template.version > constants.IMAGE_COMMIT_VERSION:
+                backing_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(constants.IMAGE_COMMIT_VERSION)
+                                            + disk.uuid)
             images.append({
                 "image_path": os.path.join(base_path, file_name),
-                "backing_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(template.version) + disk.uuid)
+                "backing_path": backing_path
             })
         logger.info("get template image info:%s", images)
         return images
 
-    def _get_copy_images(self, template, new_uuid, sys_base, data_base):
+    def _get_copy_images(self, template, new_uuid, sys_base, data_base, dest_sys_base, dest_data_base):
+        total_size = 0
         disks = list()
         images = list()
         add_disks = list()
@@ -1435,31 +1584,74 @@ class VoiTemplateController(BaseController):
         for disk in devices:
             disk_uuid = create_uuid()
             base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
+            dest_base_path = dest_sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else dest_data_base
             backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
-            backing_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk.uuid)
-            info = {
-                "image_path": backing_file,
-                "dest_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk_uuid),
-            }
-            images.append(info)
-            for operate in operates:
-                images.append(
-                    {
-                        "image_path": os.path.join(backing_dir,
-                                                   constants.VOI_BASE_PREFIX % str(operate.version) + disk.uuid),
-                        "dest_path": os.path.join(backing_dir,
-                                                  constants.VOI_BASE_PREFIX % str(operate.version) + disk_uuid)
-                    }
-                )
+
+            # 复制模板时，如果原有模板有差分盘，新模板的base盘是原有模板的base盘和差分盘合并成的；如果没有差分盘，则直接复制base盘
+            new_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk_uuid)
+            if not operates:
+                image = {
+                    "need_convert": False,
+                    "image_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk.uuid),
+                    "new_path": new_path,
+                    "size": disk.size
+                }
+                total_size += round(os.path.getsize(image['image_path']) / 1024 / 1024 / 1024, 2)
+            else:
+                # 只需用最后一个差分盘就能生成合并盘，合并盘直接用作新模板的base盘
+                temp_version = 0
+                for op in operates:
+                    if op.exist:
+                        image_path = os.path.join(backing_dir, constants.VOI_SHARE_BASE_PREFIX % str(op.version) + disk.uuid)
+                        if os.path.exists(image_path):
+                            total_size += round(os.path.getsize(image_path) / 1024 / 1024 / 1024, 2)
+                        if op.version > temp_version:
+                            temp_version = op.version
+
+                temp_version = min(temp_version, constants.IMAGE_COMMIT_VERSION)
+
+                image = {
+                    "need_convert": True,
+                    "image_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(temp_version) + disk.uuid),
+                    "new_path": new_path,
+                    "size": disk.size
+                }
+
+            if os.path.exists(image["image_path"]) and image not in images:
+                images.append(image)
+
+            # backing_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk.uuid)
+            # info = {
+            #     "image_path": backing_file,
+            #     "dest_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk_uuid),
+            #     "type": disk.type
+            # }
+            # images.append(info)
+            # for operate in operates:
+            #     image_path = os.path.join(backing_dir, constants.VOI_SHARE_BASE_PREFIX % str(operate.version)
+            #                               + disk.uuid)
+            #     image_path_dict =  {
+            #         "image_path": image_path,
+            #         "dest_path": os.path.join(backing_dir,
+            #                             constants.VOI_BASE_PREFIX % str(operate.version) + disk_uuid),
+            #         "type": disk.type
+            #     }
+            #     if os.path.exists(image_path) and image_path_dict not in images:
+            #         images.append(image_path_dict)
             disks.append({
                 "uuid": disk_uuid,
                 "dev": disk.device_name,
                 "boot_index": disk.boot_index,
-                "image_version": template.version,
+                # 新模板只有base盘
+                "image_version": 0,
+                # "image_version": template.version,
                 "image_id": "",
                 "bus": "sata",
                 "size": "%dG" % disk.size,
-                "base_path": sys_base
+                "base_path": sys_base if disk.type == constants.IMAGE_TYPE_SYSTEM else data_base,
+                "disk_file": "%s/%s%s" % (dest_base_path, constants.VOI_FILE_PREFIX, disk_uuid),
+                "backing_file": os.path.join(dest_base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                             constants.VOI_BASE_PREFIX % str(0) + disk_uuid)
             })
             add_disks.append({
                 "uuid": disk_uuid,
@@ -1487,23 +1679,36 @@ class VoiTemplateController(BaseController):
             #         "base_path": data_base
             #     }
             #     data_disks.append(disk_info)
-        logger.info("get template copy image info:%s", images)
-        return images, disks, add_disks
+        logger.info("get template copy image info:%s, %s, %s", images, disks, add_disks, total_size)
+        return images, disks, add_disks, total_size
 
-    def _get_template_storage_path(self):
-        template_sys = db_api.get_template_sys_storage()
-        template_data = db_api.get_template_data_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        sys_path = os.path.join(sys_base, 'instances')
-        if not template_data:
-            data_base = constants.DEFAULT_DATA_PATH
-        else:
-            data_base = template_data.path
-        data_path = os.path.join(data_base, 'datas')
-        return sys_path, data_path
+    # def _get_template_storage_path(self):
+    #     template_sys = db_api.get_template_sys_storage()
+    #     template_data = db_api.get_template_data_storage()
+    #     if not template_sys:
+    #         sys_base = constants.DEFAULT_SYS_PATH
+    #     else:
+    #         sys_base = template_sys.path
+    #     sys_path = os.path.join(sys_base, 'instances')
+    #     if not template_data:
+    #         data_base = constants.DEFAULT_DATA_PATH
+    #     else:
+    #         data_base = template_data.path
+    #     data_path = os.path.join(data_base, 'datas')
+    #     return sys_path, data_path
+
+    def _get_template_storage(self, node_uuid=None):
+        if not node_uuid:
+            node = db_api.get_controller_node()
+            node_uuid = node.uuid
+        template_sys = db_api.get_template_sys_storage(node_uuid)
+        template_data = db_api.get_template_data_storage(node_uuid)
+        if not (template_sys and template_data):
+            return None, None
+        sys_path = os.path.join(template_sys.path, 'instances')
+        data_path = os.path.join(template_data.path, 'datas')
+        return {"path": sys_path, "uuid": template_sys.uuid, 'free': template_sys.free}, \
+               {"path": data_path, "uuid": template_data.uuid, 'free': template_data.free}
 
     def delete_instance_only(self, ipaddr, info):
         try:
@@ -1512,7 +1717,7 @@ class VoiTemplateController(BaseController):
             return False
         return True
 
-    def upgrade_template(self, template_uuid, desc):
+    def upgrade_template(self, template_uuid, desc, is_upload=False, upload_diff_info=None):
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {'uuid': template_uuid})
         # template = db_api.get_voi_instance_template(template_uuid)
         if not template:
@@ -1524,11 +1729,15 @@ class VoiTemplateController(BaseController):
         if constants.STATUS_DOWNLOADING == template.status:
             logger.error("instance template is downloading", template_uuid)
             return get_error_result("TemplateDownloading")
-        task = Thread(target=self._save_template, args=(template_uuid, desc, ))
+        # 是终端模板上传的，需要进行合并
+        # if is_upload and upload_diff and os.path.exists(upload_diff):
+        #     pass
+
+        task = Thread(target=self._save_template, args=(template_uuid, desc, is_upload, upload_diff_info))
         task.start()
         return get_error_result("Success")
 
-    def _save_template(self, template_uuid, desc=""):
+    def _save_template(self, template_uuid, desc="", is_upload=False, upload_diff_info=None):
         """
         保存模板
         :param template_uuid: the uuid of template
@@ -1538,6 +1747,11 @@ class VoiTemplateController(BaseController):
         if not template:
             logger.error("voi template: %s not exist", template_uuid)
             return get_error_result("TemplateNotExist")
+
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+
         try:
             template.status = constants.STATUS_UPDATING
             template.soft_update()
@@ -1552,32 +1766,94 @@ class VoiTemplateController(BaseController):
                 logger.error("stop template %s failed:%s", template.uuid, e)
                 return get_error_result("TemplateStopError", name=template.name, data=str(e))
 
+            sys_base, data_base = self._get_template_storage()
+            if is_upload and upload_diff_info:
+                # 终端上传模板
+                try:
+                    for i in upload_diff_info:
+                        disk_diff = i.get("disk_diff")
+                        if not disk_diff:
+                            continue
+
+                        disk_type = i["disk_type"]
+                        disk_uuid = i["disk_uuid"]
+                        if not os.path.exists(disk_diff):
+                            logger.error("voi template terminal upload diff not exist: %s"% disk_diff)
+                            return get_error_result("TerminalUploadDiffNotExist")
+
+                        base_path = sys_base['path'] if constants.IMAGE_TYPE_SYSTEM == disk_type else data_base['path']
+                        tmp_diff_path = os.path.join(base_path, constants.VOI_FILE_PREFIX + disk_uuid)
+                        if not os.path.exists(tmp_diff_path):
+                            os.remove(tmp_diff_path)
+
+                        shutil.move(disk_diff, tmp_diff_path)
+                except Exception as e:
+                    template.status = constants.STATUS_INACTIVE
+                    template.soft_update()
+                    logger.error("voi template terminal upload diff move error", exc_info=True)
+                    return get_error_result("TerminalUploadUpdateFail")
+
             node = db_api.get_node_with_first({"uuid": template.host_uuid})
+            # 只保留前两个版本
             new_version = template.version + 1
             images = list()
-            sys_base, data_base = self._get_template_storage_path()
-            operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate, {'template_uuid': template.uuid, 'exist': True})
+
+            all_operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate, {'template_uuid': template.uuid})
+            operates = [ op for op in all_operates if op.exist ]
             devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template_uuid})
             for device in devices:
+                base_path = sys_base['path'] if constants.IMAGE_TYPE_SYSTEM == device.type else data_base['path']
+                disk_file = os.path.join(base_path, constants.VOI_FILE_PREFIX + device.uuid)
+                backing_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                            constants.VOI_BASE_PREFIX % str(new_version) + device.uuid)
+                base_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                         constants.VOI_BASE_PREFIX % str(1) + device.uuid)
+                commit_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                           constants.VOI_BASE_PREFIX % str(constants.IMAGE_COMMIT_VERSION) + device.uuid)
                 images.append({
                     "image_id": device.uuid,
-                    "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base,
+                    "disk_file": disk_file,
+                    "base_path": base_path,
+                    "backing_file": backing_file,
+                    "base_file": base_file,
+                    "commit_file": commit_file if len(operates) >= constants.IMAGE_COMMIT_VERSION else None,
                     "need_commit": True if len(operates) >= constants.IMAGE_COMMIT_VERSION else False
                 })
-            self.save(node.ip, new_version, images)
+            self.save(node.ip, new_version, images, is_upload)
             operate = {
                 "uuid": create_uuid(),
                 "template_uuid": template_uuid,
                 "remark": desc,
                 "op_type": 1,
                 "exist": True,
-                "version": new_version
+                "version": new_version if new_version <= constants.IMAGE_COMMIT_VERSION else constants.IMAGE_COMMIT_VERSION
             }
             db_api.create_template_operate(operate)
+            logger.info("create template operate: %s"% operate)
             if new_version > constants.IMAGE_COMMIT_VERSION:
                 if len(operates) >= constants.IMAGE_COMMIT_VERSION:
-                    operates[0].exist = False
-                    operates[0].soft_update()
+                    operates[-1].exist = False
+                    operates[-1].soft_update()
+                new_version = constants.IMAGE_COMMIT_VERSION
+            # for op in operates:
+            #     if op.version == operate["version"] and op.exist:
+            #         op.exist = False
+            #         op.soft_update()
+            diff1 = [ op for op in all_operates if op.version == 1]
+            diff2 = [ op for op in all_operates if op.version == 2]
+            for device in devices:
+                if len(operates) >= constants.IMAGE_COMMIT_VERSION:
+                    device.diff1_ver += 1
+                    device.diff2_ver += 1
+                elif len(operates) == 0:
+                    if diff1:
+                        device.diff1_ver += 1
+                        device.soft_update()
+                elif len(operates) == 1:
+                    if diff2:
+                        device.diff2_ver += 1
+                        device.soft_update()
+
             # 保存成功
             template.version = new_version
             template.operate_id = template.operate_id + 1
@@ -1589,9 +1865,19 @@ class VoiTemplateController(BaseController):
             template.status = constants.STATUS_ERROR
             template.updated_time = datetime.utcnow()
             template.soft_update()
+
+        # 如果启用了HA，把VOI模板差异盘、实际启动盘同步给备控，未启用则不同步
+        sync_voi_file_to_ha_backup_node(template.uuid, sys_base['path'], data_base['path'], download_base_disk=False)
+
         # 创建模板种子
-        _task = Thread(target=self.create_torrent_disks, args=(template_uuid,))
-        _task.start()
+        ret = self.create_torrent_disks(template_uuid)
+
+        if ret.get('code', -1) != 0:
+            template.status = constants.STATUS_ERROR
+            template.soft_update()
+            logger.error("template: {} create torrent error".format(template_uuid))
+            return get_error_result("TorrentCreateFail")
+
         return get_error_result("Success")
 
     def save_iso_template(self, template_uuid):
@@ -1602,13 +1888,16 @@ class VoiTemplateController(BaseController):
         if not template:
             logger.error("voi template: %s not exist", template_uuid)
             return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         template.status = constants.STATUS_SAVING
         template.soft_update()
-        task = Thread(target=self.save_iso_template_thread, args=(template_uuid, ))
+        task = Thread(target=self.save_iso_template_thread, args=(template_uuid, sys_base, data_base, ))
         task.start()
         return get_error_result("Success")
 
-    def save_iso_template_thread(self, template_uuid):
+    def save_iso_template_thread(self, template_uuid, sys_base, data_base):
         logger.info("start save iso template")
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
         # 第一步关机
@@ -1621,23 +1910,48 @@ class VoiTemplateController(BaseController):
             self._stop_instance(node.ip, instance_info, timeout=60)
         except Exception as e:
             logger.error("stop voi template %s failed:%s", template.uuid, e)
+            template.status = constants.STATUS_ERROR
+            template.soft_update()
             return get_error_result("TemplateStopError", name=template.name, data=str(e))
+        try:
+            images = list()
+            devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template_uuid})
+            for device in devices:
+                base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base
+                disk_file = os.path.join(base_path, constants.VOI_FILE_PREFIX + device.uuid)
+                backing_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                            constants.VOI_BASE_PREFIX % str(0) + device.uuid)
+                images.append({
+                    "image_id": device.uuid,
+                    "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base,
+                    "disk_file": disk_file,
+                    "backing_file": backing_file
+                })
+            configdrive = True if template.bind_ip else False
+            rep_json = self.save(node.ip, 0, images)
+            if rep_json.get('code', -1) != 0:
+                raise Exception("save action failed")
 
-        images = list()
-        sys_base, data_base = self._get_template_storage_path()
-        devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template_uuid})
-        for device in devices:
-            images.append({
-                "image_id": device.uuid,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base
-            })
-        configdrive = True if template.bind_ip else False
-        self.save(node.ip, 0, images)
-        self.detach_cdrom(node.ip, instance_info, configdrive=configdrive)
-        template.status = constants.STATUS_INACTIVE
-        template.updated_time = datetime.utcnow()
-        template.soft_update()
-        logger.info("save iso template thread end")
+            # 如果启用了HA，把VOI模板base盘、差异盘、实际启动盘同步给备控，未启用则不同步
+            sync_voi_file_to_ha_backup_node(template.uuid, sys_base, data_base, download_base_disk=True)
+
+            self.detach_cdrom(node.ip, instance_info, configdrive=configdrive)
+            if rep_json.get('code', -1) != 0:
+                raise Exception("save action detach cdrom failed")
+            ret = self.create_torrent_disks(template_uuid)
+            if ret.get('code', -1) != 0:
+                logger.exception("create torrent disk error")
+                template.status = constants.STATUS_ERROR
+                template.soft_update()
+                return get_error_result("TorrentCreateFail")
+            template.status = constants.STATUS_INACTIVE
+            template.updated_time = datetime.utcnow()
+            template.soft_update()
+            logger.info("save iso template thread end")
+        except Exception as e:
+            template.status = constants.STATUS_ERROR
+            template.soft_update()
+            logger.exception("save iso template failed:%s", e)
         return get_error_result("Success")
 
     def copy_template(self, data):
@@ -1657,7 +1971,7 @@ class VoiTemplateController(BaseController):
         :return:
         """
         logger.info("copy data, data:%s", data)
-        template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": data['name']})
+        template = db_api.get_item_with_first(models.YzyVoiTemplate, {"name": data['name']})
         if template:
             logger.error("template: %s already exist", data['name'])
             return get_error_result("TemplateAlreadyExist", name=data['name'])
@@ -1667,6 +1981,12 @@ class VoiTemplateController(BaseController):
         if not template:
             logger.error("template: %s not exist", template_uuid)
             return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+        sys_storage, data_storage = self._get_template_storage()
+        if not (sys_storage and data_storage):
+            return get_error_result("InstancePathNotExist")
 
         network = db_api.get_network_by_uuid(data['network_uuid'])
         if not network:
@@ -1706,14 +2026,14 @@ class VoiTemplateController(BaseController):
         else:
             node = db_api.get_controller_node()
         new_uuid = create_uuid()
-        sys_base, data_base = self._get_template_storage_path()
-        images, kvm_disks, add_disks = self._get_copy_images(template, new_uuid, sys_base, data_base)
-        free = self.get_template_sys_space(node.uuid)
-        total_size = 0
-        for image in images:
-            if os.path.exists(image['image_path']):
-                total_size += round(os.path.getsize(image['image_path'])/1024/1024/1024, 2)
-        if total_size > free:
+
+        images, kvm_disks, add_disks, total_size = self._get_copy_images(template, new_uuid, sys_base, data_base,
+                                                             sys_storage['path'], data_storage['path'])
+        # total_size = 0
+        # for image in images:
+        #     if os.path.exists(image['image_path']):
+        #         total_size += round(os.path.getsize(image['image_path'])/1024/1024/1024, 2)
+        if total_size > sys_storage['free']:
             logger.exception("the disk size in not enough, return")
             return get_error_result("SpaceNotEnough")
         # mac和port分配
@@ -1735,28 +2055,36 @@ class VoiTemplateController(BaseController):
                 "template_uuid": new_uuid,
                 "group_uuid": group_uuid
             })
-        ops = list()
-        # 操作记录
-        operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate, {"template_uuid": template.uuid})
-        for operate in operates:
-            ops.append({
-                "uuid": create_uuid(),
-                "template_uuid": new_uuid,
-                "remark": operate['remark'],
-                "op_type": operate['op_type'],
-                "exist": operate['exist'],
-                "version": operate['version']
-            })
+
+        # 复制模板时，如果原有模板有差分盘，新模板的base盘是原有模板的base盘和差分盘合并成的
+        # 因此，新模板的version、operate_id归零，yzy_voi_template_operate表中不会有新模板的关联数据
+        # ops = list()
+        # # 操作记录
+        # operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate, {"template_uuid": template.uuid})
+        # for operate in operates:
+        #     ops.append({
+        #         "uuid": create_uuid(),
+        #         "template_uuid": new_uuid,
+        #         "remark": operate['remark'],
+        #         "op_type": operate['op_type'],
+        #         "exist": operate['exist'],
+        #         "version": operate['version']
+        #     })
+
         values = {
             "uuid": new_uuid,
             "name": data['name'],
             "desc": data.get('desc'),
             "owner_id": data['owner_id'],
-            "version": template.version,
-            "operate_id": template.operate_id,
+            "version": 0,
+            # "version": template.version,
+            "operate_id": 0,
+            # "operate_id": template.operate_id,
             "host_uuid": node.uuid,
             "network_uuid": data['network_uuid'],
             "subnet_uuid": data.get('subnet_uuid', None),
+            "sys_storage": template.sys_storage,
+            "data_storage": template.data_storage,
             "bind_ip": data.get('bind_ip', ''),
             "os_type": template.os_type,
             "classify": template.classify,
@@ -1771,8 +2099,8 @@ class VoiTemplateController(BaseController):
         db_api.insert_with_many(models.YzyVoiDeviceInfo, add_disks)
         if binds:
             db_api.insert_with_many(models.YzyVoiTemplateGroups, binds)
-        if ops:
-            db_api.insert_with_many(models.YzyVoiTemplateOperate, ops)
+        # if ops:
+        #     db_api.insert_with_many(models.YzyVoiTemplateOperate, ops)
         values['id'] = new_template['id']
         pre_status = template.status
         template.status = constants.STATUS_COPING
@@ -1785,8 +2113,6 @@ class VoiTemplateController(BaseController):
         task = Thread(target=self.create_template_thread,
                       args=(node_info, values, subnet, template_uuid, pre_status, images, kvm_disks, ))
         task.start()
-        _task = Thread(target=self.create_torrent_disks, args=(new_uuid,))
-        _task.start()
         ret = {
             "uuid": new_template.uuid,
             "name": data['name'],
@@ -1798,13 +2124,17 @@ class VoiTemplateController(BaseController):
         origin_template = db_api.get_item_with_first(models.YzyVoiTemplate, {'uuid': origin})
         new_template = db_api.get_item_with_first(models.YzyVoiTemplate, {'uuid': data['uuid']})
         try:
-            rep_json = self.copy(node_info['ipaddr'], origin_template.version, images)
-            if rep_json.get('code', -1) != 0:
-                raise Exception("copy image failed")
+            # rep_json = self.copy(node_info['ipaddr'], origin_template.version, images)
+            # 复制模板时，如果原有模板有差分盘，新模板的base盘是原有模板的base盘和差分盘合并成的；如果没有差分盘，则直接复制base盘
+            for image in images:
+                rep_json = self.convert(node_info['ipaddr'], image)
+                if rep_json.get('code', -1) != 0:
+                    raise Exception("convert image failed")
             configdrive = True
             zm = string.ascii_lowercase
             if configdrive:
-                for i in range(4):
+                # 确保添加两个cdrom
+                for i in range(len(kvm_disks) + 2):
                     for disk in kvm_disks:
                         index = zm.index(disk['dev'][-1])
                         if index == i:
@@ -1846,6 +2176,13 @@ class VoiTemplateController(BaseController):
         new_template.soft_update()
         origin_template.status = pre_status
         origin_template.soft_update()
+        # logger.info("copy the voi template success, node:%s", node_info['ipaddr'])
+        ret = self.create_torrent_disks(new_template.uuid)
+        if ret.get('code', -1) != 0:
+            new_template.status = constants.STATUS_ERROR
+            new_template.soft_update()
+            logger.error("template: {} create torrent error".format(new_template.uuid))
+            return get_error_result("TorrentCreateFail")
         logger.info("copy the voi template success, node:%s", node_info['ipaddr'])
         return get_error_result("Success")
 
@@ -1870,7 +2207,9 @@ class VoiTemplateController(BaseController):
 
     def get_downloading_path(self, template_uuid):
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {'uuid': template_uuid})
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         sys_info = db_api.get_item_with_first(models.YzyVoiDeviceInfo,
                                               {'instance_uuid': template.uuid, 'type': constants.IMAGE_TYPE_SYSTEM})
         backing_path = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
@@ -1888,13 +2227,20 @@ class VoiTemplateController(BaseController):
             logger.error("template is already in downloading")
             return get_error_result("Success")
 
+        # 下载到当前路径下
+        cur_sys, cur_data = self._get_template_storage()
+        if not (cur_sys and cur_data):
+            return get_error_result("InstancePathNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+
         node = db_api.get_node_with_first({'uuid': template.host_uuid})
-        sys_base, data_base = self._get_template_storage_path()
-        free = self.get_template_sys_space(node.uuid)
         backing_dir = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
-        sys_info = db_api.get_item_with_first(models.YzyVoiDeviceInfo, {'type': constants.IMAGE_TYPE_SYSTEM})
+        sys_info = db_api.get_item_with_first(models.YzyVoiDeviceInfo, {'instance_uuid': template.uuid,
+                                                                        'type': constants.IMAGE_TYPE_SYSTEM})
         operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
-                                            {'template_uuid': template.uuid, 'exist': True})
+                                            {'template_uuid': template.uuid, "exist": True})
         # 下载合成后还需要写头部信息，因此需要两倍空间
         total_size = 0
         file_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + sys_info.uuid)
@@ -1903,7 +2249,7 @@ class VoiTemplateController(BaseController):
             file_path = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(operate.version) + sys_info.uuid)
             if os.path.exists(file_path):
                 total_size += round(os.path.getsize(file_path)/1024/1024/1024, 2)
-        if total_size*2 > free:
+        if total_size*2 > cur_sys['free']:
             logger.exception("the disk size in not enough, return")
             return get_error_result("SpaceNotEnough")
         # 获取需要convert的差异文件名
@@ -1912,15 +2258,22 @@ class VoiTemplateController(BaseController):
             image = {
                 "need_convert": False,
                 "image_path": os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + sys_info.uuid),
-                "new_path": os.path.join(backing_dir, new_uuid),
+                "new_path": os.path.join(cur_sys['path'], constants.IMAGE_CACHE_DIRECTORY_NAME, new_uuid),
                 "size": sys_info.size
             }
         else:
+            temp_version = 0
+            for op in operates:
+                if op.exist:
+                    temp_version = op.version
+                    if op.version > constants.IMAGE_COMMIT_VERSION:
+                        temp_version = constants.IMAGE_COMMIT_VERSION
+
             image = {
                 "need_convert": True,
                 "image_path": os.path.join(backing_dir,
-                                           constants.VOI_BASE_PREFIX % str(operates[-1].version) + sys_info.uuid),
-                "new_path": os.path.join(backing_dir, new_uuid),
+                                           constants.VOI_BASE_PREFIX % str(temp_version) + sys_info.uuid),
+                "new_path": os.path.join(cur_sys['path'], constants.IMAGE_CACHE_DIRECTORY_NAME, new_uuid),
                 "size": sys_info.size
             }
         # 在模板所在节点合并差异文件生成新的基础镜像（只有系统盘）
@@ -2060,24 +2413,58 @@ class VoiTemplateController(BaseController):
         if not template:
             logger.error("voi template: %s not exist", data['uuid'])
             return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         self.stop_template(template.uuid, hard=True)
         # if constants.STATUS_ACTIVE == template.status:
         #     return get_error_result("TemplateIsActive", name=template.name)
         images = list()
         template.status = constants.STATUS_ROLLBACK
         template.soft_update()
-        sys_base, data_base = self._get_template_storage_path()
+
+        if data['rollback_version'] != 0:
+            rollback_version = 1
+            cur_version = 2
+        else:
+            rollback_version = data['rollback_version']
+            cur_version = data['cur_version']
         devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": data['uuid']})
         for device in devices:
+            base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base
+            disk_file = os.path.join(base_path, constants.VOI_FILE_PREFIX + device.uuid)
+            backing_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                        constants.VOI_BASE_PREFIX % str(rollback_version) + device.uuid)
+            rollback_file = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                         constants.VOI_BASE_PREFIX % str(cur_version) + device.uuid)
             images.append({
                 "image_id": device.uuid,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base
+                "disk_file": disk_file,
+                "backing_file": backing_file,
+                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base,
+                "rollback_file": rollback_file
             })
         node = db_api.get_node_with_first({'uuid': template.host_uuid})
         rep_json = self.rollback(node.ip, data['rollback_version'], data['cur_version'], images)
+        logger.info("rollback request compute api return: %s" % rep_json)
         if rep_json.get("code", -1) != 0:
             logger.error("template rollback failed:%s", rep_json)
+            template.status = constants.STATUS_ERROR
+            template.soft_update()
             return get_error_result("TemplateRollbackError")
+        images = rep_json.get("data", [])
+        for dev in devices:
+            for img in images:
+                if dev.uuid == img["image_id"]:
+                    # 回退也将删除的差分版本增加
+                    if data['cur_version'] >= constants.IMAGE_COMMIT_VERSION:
+                        dev.diff2_ver += 1
+                    else:
+                        dev.diff1_ver += 1
+                    dev.size = img.get("size", dev.size)
+                    dev.soft_update()
+                    break
+
         operate = db_api.get_item_with_first(
             models.YzyVoiTemplateOperate, {'template_uuid': data['uuid'], 'version': data['cur_version'], 'exist': True})
         if operate:
@@ -2136,6 +2523,8 @@ class VoiTemplateController(BaseController):
 
         desktop_group_list = list()
         template_uuids = list()
+        reserve_size_dict = dict()
+        # logger.info("get desktop group %s"% desktops)
         for desktop in desktops:
             # get desktop ip info
             use_bottom_ip = desktop.use_bottom_ip
@@ -2160,6 +2549,7 @@ class VoiTemplateController(BaseController):
                         desktop_dns2 = qry_temminal_desktops.desktop_dns2
 
             template_uuid = desktop.template_uuid
+            reserve_size_dict[template_uuid] = (desktop.sys_reserve_size, desktop.data_reserve_size)
             template_updated_time = desktop.template.updated_time.strftime('%Y-%m-%d %H:%M:%S')
             if template_uuid not in template_uuids:
                 template_uuids.append(template_uuid)
@@ -2180,13 +2570,14 @@ class VoiTemplateController(BaseController):
                                            "desktop_mask": desktop_mask,
                                            "desktop_gateway": desktop_gateway,
                                            "desktop_dns1": desktop_dns1,
-                                           "desktop_dns2": desktop_dns2
+                                           "desktop_dns2": desktop_dns2,
+                                           "diff_mode": desktop.diff_mode
                                            })
 
-        sys_base, data_base = self._get_template_storage_path()
         templates = db_api.get_voi_template_by_uuids(template_uuids)
 
         for template in templates:
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
             _d = dict()
             template_name = template.name
             template_uuid = template.uuid
@@ -2196,9 +2587,17 @@ class VoiTemplateController(BaseController):
             operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
                                                 {"template_uuid": template.uuid, "exist": True})
             disks = list()
+            sys_reserve_size, data_reserve_size = reserve_size_dict.get(template_uuid, (100,100))
             for disk in devices:
                 _tmp_disk = list()
-                base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
+                if constants.IMAGE_TYPE_SYSTEM == disk.type:
+                    base_path = sys_base
+                    _reserve_size = sys_reserve_size
+                else:
+                    base_path = data_base
+                    _reserve_size = data_reserve_size
+
+                # base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
                 # file_name = constants.VOI_BASE_PREFIX + disk.uuid
                 backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
                 backing_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(0) + disk.uuid)
@@ -2206,22 +2605,35 @@ class VoiTemplateController(BaseController):
                     logger.error("disk info error: %s disk file not exist" % backing_file)
                     return get_error_result("DiskNotExist")
                 # reserve_size = str(bytes_to_section(os.path.getsize(backing_file)))
-                reserve_size = str(gi_to_section(100))
+                reserve_size = str(gi_to_section(_reserve_size))
+                logger.info("desktop disk info reserve size: %s"% reserve_size)
                 real_size  = str(disk.section) if disk.section else str(gi_to_section(disk.size))
+                max_diff = template.version \
+                    if template.version <= constants.IMAGE_COMMIT_VERSION else constants.IMAGE_COMMIT_VERSION
                 _tmp_disk.append(
-                    {"uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": 0, "prefix": "voi",
-                     "real_size": real_size, "reserve_size": reserve_size, "max_dif": template.version})
+                    {
+                        "uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": 0, "prefix": "voi",
+                        "real_size": real_size, "reserve_size": reserve_size, "max_dif": max_diff,
+                        "operate_id": 0
+                    }
+                )
                 for operate in operates:
                     file_path = os.path.join(backing_dir,
                                              constants.VOI_BASE_PREFIX % str(operate.version) + disk.uuid)
                     if os.path.exists(file_path):
                         # reserve_size = str(bytes_to_section(os.path.getsize(file_path)) + gi_to_section(50)) # 加5G
-                        reserve_size = str(gi_to_section(100)) # 加5G
-
+                        reserve_size = str(gi_to_section(_reserve_size)) # 加5G
+                        if operate.version == 1:
+                            operate_id = disk.diff1_ver
+                        else:
+                            operate_id = disk.diff2_ver
                         _tmp_disk.append(
-                            {"uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": operate.version,
-                             "prefix": "voi", "real_size": real_size,
-                             "reserve_size": reserve_size, "max_dif": template.version })
+                            {
+                                "uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": operate.version,
+                                "prefix": "voi", "real_size": real_size,
+                                "reserve_size": reserve_size, "max_dif": max_diff, "operate_id": operate_id
+                            }
+                        )
                 _tmp_disk.sort(key=lambda x:x["dif_level"])
                 # import pdb; pdb.set_trace()
                 # disks.append(_tmp_disk[-1])
@@ -2246,15 +2658,19 @@ class VoiTemplateController(BaseController):
             share_disks_dict = dict()
             for share_disk in share_disks:
                 backing_dir = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
-                base_name = (constants.VOI_SHARE_BASE_PREFIX % share_disk.version) + share_disk.uuid
+                base_name = (constants.VOI_SHARE_BASE_PREFIX % str(0)) + share_disk.uuid
                 base_file = os.path.join(backing_dir, base_name)
-                reserve_size = str(bytes_to_section(os.path.getsize(base_file)))
+                if not os.path.exists(base_file):
+                    logger.warning("desktop inf share disk not exist: %s"% base_file)
+                    continue
+
+                reserve_size = str(gi_to_section(share_disk.disk_size))
                 share_disk_uuid = share_disk.uuid
                 share_disks_dict[share_disk_uuid] = {
-                                "uuid": share_disk.uuid, "type": 2, "prefix": "voi", "dif_level": share_disk.version,
+                                "uuid": share_disk.uuid, "type": 2, "prefix": "voi", "dif_level": 0,
                                 "reserve_size": reserve_size, "real_size": str(gi_to_section(share_disk.disk_size)),
                                 "torrent_file": base_file + ".torrent", "restore_flag": share_disk.restore,
-                                "max_dif": share_disk.version
+                                "max_dif": 0, "operate_id": share_disk.version
                             }
 
             share_disks_binds = db_api.get_item_with_all(models.YzyVoiShareToDesktops, {"group_uuid": group_uuid})
@@ -2285,10 +2701,11 @@ class VoiTemplateController(BaseController):
         template_uuid = data.get("uuid")
         template = db_api.get_voi_instance_template(template_uuid)
         if not template:
-            logger.error("desktop sync info error: %s not exist"% template_uuid)
+            logger.error("desktop sync info error: %s not exist", template_uuid)
             return get_error_result("TerminalDesktopNotExist")
-
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         template_name = template.name
         template_uuid = template.uuid
         desktop_info = dict()
@@ -2312,19 +2729,22 @@ class VoiTemplateController(BaseController):
             reserve_size = str(bytes_to_section(os.path.getsize(backing_file)))
             real_size = str(disk.section) if disk.section else str(gi_to_section(disk.size))
             disks.append({"uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": 0, "prefix": "voi",
-                          "real_size": real_size,
+                          "real_size": real_size, "operate_id": 0,
                           "file_path": backing_file, "reserve_size": reserve_size})
             for operate in operates:
                 file_path = os.path.join(backing_dir,
                                 constants.VOI_BASE_PREFIX % str(operate.version) + disk.uuid)
-
+                if operate.version == 1:
+                    operate_id = disk.diff1_ver
+                else:
+                    operate_id = disk.diff2_ver
                 if os.path.exists(file_path):
                     reserve_size = str(bytes_to_section(os.path.getsize(file_path)))
                     # _size =
                     disks.append(
                         {"uuid": disk.uuid, "type": self.disk_type_dict[disk.type], "dif_level": operate.version,
                          "prefix": "voi", "real_size": real_size, "file_path": file_path,
-                         "reserve_size": reserve_size})
+                         "reserve_size": reserve_size, "operate_id": operate_id})
         desktop_info["disks"] = disks
         logger.info("current desktop info compare info:%s", desktop_info)
         # 对比
@@ -2535,27 +2955,69 @@ class VoiTemplateController(BaseController):
             "reserve_size": 2222222222
         }
         """
+        logger.info("voi terminal download template diff disk %s"% data)
         desktop_group_uuid = data.get("desktop_group_uuid", "")
         diff_disk_uuid = data.get("diff_disk_uuid", "")
         diff_level = data.get("diff_level", "")
+        diff_disk_type = data.get("diff_disk_type", "")
+        if int(diff_level) >= constants.IMAGE_COMMIT_VERSION:
+            diff_level = constants.IMAGE_COMMIT_VERSION
+
         desktop_group = db_api.get_item_with_first(models.YzyVoiDesktop, {"uuid": desktop_group_uuid})
         if desktop_group:
             template_uuid = desktop_group.template_uuid
+            template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
+            if not template:
+                logger.error("desktop group %s, %s template not exist" % (desktop_group_uuid, template_uuid))
+                return get_error_result("TemplateNotExist")
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+            if not (sys_base and data_base):
+                return get_error_result("InstancePathNotExist")
+
+            if diff_disk_type == self.disk_type_dict[constants.IMAGE_TYPE_SHARE]:
+                # 共享盘
+                share_disk = db_api.get_item_with_first(models.YzyVoiTerminalShareDisk, {"uuid": diff_disk_uuid})
+                if not share_disk:
+                    logger.error("voi terminal download share disk %s error: not exist"% diff_disk_uuid)
+                    return get_error_result("DiskNotExist")
+                share_disk_file = constants.VOI_BASE_PREFIX % str(0) + share_disk.uuid
+                torrent_file = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME, share_disk_file + ".torrent")
+                disk_size = share_disk.disk_size
+                ret_data = {
+                    "desktop_group_name": desktop_group.name,
+                    "template_uuid": desktop_group.template_uuid,
+                    "diff_disk_type": diff_disk_type,
+                    "os_sys_type": self.system_type_dict[desktop_group.os_type.lower()],
+                    "real_size": str(gi_to_section(disk_size)),
+                    "disk_size": disk_size,
+                    "operate_id": share_disk.version,
+                    "reserve_size": str(gi_to_section(disk_size)),
+                    "torrent_file": torrent_file
+                }
+                logger.debug('voi terminal download share disk return: {}'.format(ret_data))
+                return get_error_result("Success", ret_data)
+
+
             os_type = desktop_group.os_type
             disk = db_api.get_item_with_first(models.YzyVoiDeviceInfo,
                                             {"instance_uuid": template_uuid, "uuid": diff_disk_uuid})
             if not disk:
                 logger.error('template_uuid: {}, diff_disk_uuid: {}'.format(template_uuid, diff_disk_uuid))
                 return get_error_result("DiskNotExist")
-            if diff_level:
-                operate_version = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
-                                                    {"template_uuid": template_uuid,
-                                                     "version": diff_level,
-                                                     "exist": True})
-                if not operate_version:
-                    return get_error_result("TemplateVersionNotExist")
+            # if diff_level:
+            #     operate_version = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
+            #                                         {"template_uuid": template_uuid,
+            #                                          "version": diff_level,
+            #                                          "exist": True})
+            #     if not operate_version:
+            #         return get_error_result("TemplateVersionNotExist")
 
-            sys_base, data_base = self._get_template_storage_path()
+            # 判断模板是否能更新下载
+            if not template.status in (constants.STATUS_INACTIVE, constants.STATUS_ACTIVE, constants.STATUS_SHUTDOWN):
+                logger.error("desktop group %s, %s template status %s is not allow update"% (
+                                                    desktop_group_uuid, template_uuid, template.status))
+                return get_error_result("TemplateNotAllowUpdateError")
+
             base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
             backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
             backing_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(diff_level) + disk.uuid)
@@ -2567,14 +3029,22 @@ class VoiTemplateController(BaseController):
                 logger.error("%s torrent file not exist" % torrent_file)
                 return get_error_result("OtherError")
             # reserve_size = str(bytes_to_section(os.path.getsize(backing_file)) + gi_to_section(50))  # 加5G
-            reserve_size = str(gi_to_section(100))                                                      # 加5G
+            if constants.IMAGE_TYPE_SYSTEM == disk.type:
+                reserve_size = str(gi_to_section(desktop_group.sys_reserve_size))
+            else:
+                reserve_size = str(gi_to_section(desktop_group.data_reserve_size)) # 加5G
 
+            operate_id = disk.diff2_ver if int(diff_level) >= constants.IMAGE_COMMIT_VERSION else disk.diff1_ver
             real_size = str(disk.section) if disk.section else str(gi_to_section(disk.size))
+            file_size = os.path.getsize(backing_file)
             ret_data = {
+                "desktop_group_name": desktop_group.name,
                 "template_uuid": template_uuid,
                 "diff_disk_type": self.disk_type_dict[disk.type],
                 "os_sys_type": self.system_type_dict[desktop_group.os_type.lower()],
                 "real_size": real_size,
+                "disk_size": size_to_G(file_size, 4),
+                "operate_id": operate_id,
                 "reserve_size": reserve_size,
                 "torrent_file": torrent_file
             }
@@ -2590,7 +3060,6 @@ class VoiTemplateController(BaseController):
         # if not templates:
         #     logger.error("init desktop info error: %s not exist" % )
         #     return get_error_result("TerminalDesktopNotExist")
-        sys_base, data_base = self._get_template_storage_path()
         desktops = list()
         for template in templates:
             template_name = template.name
@@ -2601,6 +3070,7 @@ class VoiTemplateController(BaseController):
             desktop_info["sys_type"] = template.os_type
             desktop_info["desc"] = template.desc
 
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
             devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
             operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
                                                 {"template_uuid": template.uuid, "exist": True})
@@ -2644,7 +3114,6 @@ class VoiTemplateController(BaseController):
         # if not templates:
         #     logger.error("init desktop info error: %s not exist" % )
         #     return get_error_result("TerminalDesktopNotExist")
-        sys_base, data_base = self._get_template_storage_path()
         desktops = list()
         for template in templates:
             template_name = template.name
@@ -2655,8 +3124,10 @@ class VoiTemplateController(BaseController):
             desktop_info["sys_type"] = self.system_type_dict[template.os_type]
             desktop_info["desc"] = template.desc
 
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
             devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
             operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
+                                                # {"template_uuid": template.uuid, })
                                                 {"template_uuid": template.uuid, "exist": True})
             disks = list()
             for disk in devices:
@@ -2708,7 +3179,9 @@ class VoiTemplateController(BaseController):
         mac_list_str = data.get("mac_list", "")
         template_uuid = data.get("desktop_uuid", "")
         template = db_api.get_item_with_first(models.YzyVoiTemplate, {"uuid": template_uuid})
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         desktops = list()
         template_name = template.name
         template_uuid = template.uuid
@@ -2720,6 +3193,7 @@ class VoiTemplateController(BaseController):
 
         devices = db_api.get_item_with_all(models.YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
         operates = db_api.get_item_with_all(models.YzyVoiTemplateOperate,
+                                            # {"template_uuid": template.uuid})
                                             {"template_uuid": template.uuid, "exist": True})
         disks = list()
         for disk in devices:
@@ -2778,6 +3252,11 @@ class VoiTemplateController(BaseController):
         if not desktop:
             logger.error("terminal upload diff disk error: %s desktop not exist" % desktop_group_uuid)
             return get_error_result("DesktopNotExist", name="")
+        image_nic = db_api.select_controller_image_ip()
+        if not image_nic:
+            logger.error("get controller image nic error, please check !!!")
+            return get_error_result("OtherError")
+        tracker_ip = image_nic.ip
         # todo 判断差分盘的层级
         diff_level = data.get("diff_level")
         resp = get_error_result("Success")
@@ -2800,3 +3279,46 @@ class VoiTemplateController(BaseController):
                 resp = get_error_result("Success", data={"can_update": 1})
         return resp
 
+    def save_torrent_file(self, data):
+        """
+        保存种子文件
+
+        request_data = {
+            "torrent_file": torrent_file,
+            "torrent_base64": torrent_base64,
+            "disk_uuid": disk_uuid,
+            "disk_type": disk_type,
+            "dif_level": dif_level
+        }
+        :param data:
+        :return:
+        """
+        try:
+            sys_base, data_base = self._get_template_storage()
+            disk_type = data["disk_type"]
+            torrent_base64 = data["torrent_base64"]
+            torrent_file = data["torrent_file"]
+            base_path = sys_base['path'] if self.disk_type_dict[constants.IMAGE_TYPE_SYSTEM] == disk_type else data_base['path']
+            # file_name = constants.VOI_BASE_PREFIX + disk.uuid
+            backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
+            torrent_bin = base64.b64decode(torrent_base64.encode("utf-8"))
+            logger.debug("save torrent: %s", torrent_bin)
+            torrent_path = os.path.join(backing_dir, torrent_file)
+            with open(torrent_path, "wb") as f:
+                f.write(torrent_bin)
+            file_dir = os.path.join(backing_dir, "diff_upload/" + os.path.splitext(os.path.basename(torrent_file))[0])
+            if not os.path.exists(file_dir):
+                try:
+                    os.makedirs(file_dir)
+                except:
+                    pass
+
+            logger.info("save torrent success: %s"% data)
+            rep_data = {
+                "torrent_file": torrent_path,
+                "save_path" : file_dir
+            }
+            return get_error_result("Success", data=rep_data)
+        except Exception as e:
+            logger.error("", exc_info=True)
+            return get_error_result("OtherError")

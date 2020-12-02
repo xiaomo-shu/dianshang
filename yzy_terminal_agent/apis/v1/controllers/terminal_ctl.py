@@ -1,23 +1,19 @@
-import time
-import functools
 import copy
-import random
-from datetime import datetime, timedelta
 import json
+import time
 import sys
 import os
-import struct
 import datetime as dt
 import logging
 import traceback
 import base64
 import common.errcode as errcode
 import hashlib
-# from .desktop_ctl import BaseController
+import threading
 from flask import current_app
 from yzy_terminal_agent.database import api as db_api
-from common.utils import build_result, create_uuid, find_ips, is_ip_addr, create_md5, terminal_post
-from common.utils import Singleton, voi_terminal_post, get_error_result, get_error_name
+from common.utils import build_result, create_uuid, is_ip_addr, create_md5, size_to_G
+from common.utils import get_error_result, get_error_name
 from yzy_terminal_agent.extensions import get_controller_image_ip
 from yzy_terminal_agent.redis_client import RedisClient
 from yzy_terminal_agent.http_client import HttpClient
@@ -48,12 +44,28 @@ class TerminalTaskHandler(object):
         self.name = os.path.basename(__file__).split('.')[0]
         self.type = "TerminalTaskHandler"
         self.msg_center = RedisMessageCenter()
+        self.repeat_msg_center = RedisMessageCenter("yzy::repeat_torrent")
         self.rds = RedisClient()
         self.http_client = HttpClient()
+        self.disk_type = (
+            constants.IMAGE_TYPE_SYSTEM,
+            constants.IMAGE_TYPE_DATA,
+            constants.IMAGE_TYPE_SHARE
+        )
 
     def create_batch_no(self):
         key_name = "voi_web_command_batch_no"
         return self.rds.incr(key_name)
+
+    def set_cache(self, key, value, ex=5):
+        return self.rds.set(key, value, ex)
+
+    def get_cache(self, key):
+        ret = self.rds.get(key)
+        if not ret:
+            return None
+
+        return ret.decode('utf-8')
 
     def push_torrent_task_list(self, torrent_task):
         """ 种子任务队列 push"""
@@ -121,6 +133,7 @@ class TerminalTaskHandler(object):
         insert_data = data.get("data")  # include status of terminal type
         ip_port = "%s:%s" % (insert_data['ip'], insert_data['port'])
         insert_data.pop('port')
+        desktop_uuid = insert_data.pop('desktop_uuid')
         try:
             table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
             qry = table_api.select_terminal_by_mac(insert_data['mac'])
@@ -133,7 +146,18 @@ class TerminalTaskHandler(object):
                                                                  insert_data['status'])
                 table_api.add_terminal(terminal_values)
                 logger.debug('mac: {} add new default yzy_voi_terminal record'.format(insert_data['mac']))
+            if insert_data["status"] == TerminalStatus.WINDOWS and desktop_uuid:
+                # 更新当前桌面的在线离线状态
+                table_api = db_api.YzyVoiTerminalToDesktopsCtrl(current_app.db)
+                qry = table_api.get_desktop_by_terminal_mac(insert_data["mac"])
+                for row in qry:
+                    values = { "desktop_status": 0}
+                    if row.desktop_group_uuid == desktop_uuid:
+                        values["desktop_status"] = 1
+                    table_api.update_task_values(row, values)
+
             resp["data"] = {}
+            resp["data"]["datetime"] = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             resp["data"]["token"] = self.get_md5(ip_port)
             return resp
         except Exception as err:
@@ -226,6 +250,20 @@ class TerminalTaskHandler(object):
             table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
             qry = table_api.select_terminal_by_mac(request_data["mac"])
             if qry:
+                # 更新终端的软件版本、
+                new_terminal_info = dict()
+                new_platform = request_data.get("platform", "")
+                if new_platform and qry.platform != new_platform:
+                    new_terminal_info["platform"] = new_platform
+                new_soft_version = request_data.get("soft_version", "")
+                if new_soft_version and qry.soft_version != new_soft_version:
+                    new_terminal_info["soft_version"] = new_soft_version
+                new_disk_residue = request_data.get("disk_residue", "")
+                if new_disk_residue and qry.disk_residue != new_disk_residue:
+                    new_terminal_info["disk_residue"] = new_disk_residue
+                if new_terminal_info:
+                    new_terminal_info["mac"] = request_data["mac"]
+                    table_api.update_terminal_by_mac(**new_terminal_info)
                 conf_version = int(qry['conf_version'])
                 logger.debug('conf_version {}'.format(conf_version))
         except Exception as err:
@@ -261,7 +299,7 @@ class TerminalTaskHandler(object):
         logger.debug(input_data)
         try:
             ret = errcode.get_error_result("Success", msg='en')
-            if input_data["terminal_id"] < 0:
+            if input_data["terminal_id"] < -1:
                 ret = errcode.get_error_result("TerminalIdError", msg="en")
             elif len(input_data["mac"]) == 0:
                 ret = errcode.get_error_result("TerminalMacError", msg="en")
@@ -294,7 +332,7 @@ class TerminalTaskHandler(object):
             ret = errcode.get_error_result("OtherError", msg="en")
         return ret
 
-    def update_config_info(self, data):
+    def update_config_info_new(self, data):
         logger.debug("data: {}".format(data))
         request_data = data.get("data")
         resp = get_error_result("Success", msg="en")
@@ -335,22 +373,141 @@ class TerminalTaskHandler(object):
                 'disk_residue': request_data["disk_residue"]
             }
             terminal_update_values = terminal_values.copy()
-            logger.debug(terminal_update_values)
+            logger.debug("terminal mac:%s update config info: %s" % (request_data["mac"], terminal_update_values))
             table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
             qry = table_api.select_terminal_by_mac(request_data["mac"])
             update_group_uuid = group_uuid
             if qry:
                 # if yzy_voi_terminal is not null, then need to check group valid
                 if qry.group_uuid != group_uuid:
-                    request_url = "/api/v1/voi/terminal/education/groups"
-                    logger.debug("request yzy_server {}, {}".format(request_url, {}))
-                    server_ret = self.http_client.post(request_url, {})
-                    logger.debug("get yzy_server return {}, {}".format(request_url, server_ret))
-                    if server_ret.get("code", -1) == 0:
-                        ret_data = server_ret.get('data', None)
-                        if ret_data and qry.group_uuid in ret_data['groups']:
+                    redis_key = "yzy:terminal:eductaion:groups"
+                    cache_groups = self.get_cache(redis_key)
+                    if not cache_groups:
+                        request_url = "/api/v1/voi/terminal/education/groups"
+                        logger.debug("request yzy_server {}, {}".format(request_url, {}))
+                        server_ret = self.http_client.post(request_url, {})
+                        logger.debug("get yzy_server return {}, {}".format(request_url, server_ret))
+                        if server_ret.get("code", -1) == 0:
+                            ret_data = server_ret.get('data', None)
+                            groups = ret_data["groups"]
+                            if ret_data and qry.group_uuid in ret_data['groups']:
+                                terminal_update_values["group_uuid"] = qry.group_uuid
+                                update_group_uuid = qry.group_uuid
+                                self.set_cache(redis_key, json.dumps(groups), 5)
+                    else:
+                        if qry.group_uuid in cache_groups:
                             terminal_update_values["group_uuid"] = qry.group_uuid
                             update_group_uuid = qry.group_uuid
+
+                table_api.update_terminal_by_mac(**terminal_update_values)
+            else:
+                # table_api.add_terminal(terminal_values)
+                logger.error("TerminalRecordNotExist: {}".format(request_data["mac"]))
+                resp = errcode.get_error_result("TerminalRecordNotExist", msg="en")
+                logger.debug("Return terminal: ret = {}".format(resp))
+                return resp
+
+            # create voi terminal desktops
+            # if request_data['status'] == TerminalStatus.U_LINUX:
+            request_server_data = {
+                'group_uuid': update_group_uuid,
+                'terminal_uuid': qry.uuid,
+                'terminal_id': request_data["terminal_id"],
+                'mac': request_data["mac"],
+                'ip': request_data["ip"],
+                'mask': request_data["mask"],
+                'gateway': request_data["gateway"],
+                'dns1': request_data["dns1"],
+                'dns2': request_data.get("dns2", ""),
+                'is_dhcp': request_data["is_dhcp"],
+            }
+            request_url = "/api/v1/voi/terminal/education/create_desktop_bind"
+            logger.debug("request yzy_server {}, {}".format(request_url, request_server_data))
+            server_ret = self.http_client.post(request_url, request_server_data)
+            logger.debug("get yzy_server return {}, {}".format(request_url, server_ret))
+            if server_ret.get("code", -1) != 0:
+                resp = errcode.get_error_result("OtherError", msg="en")
+            logger.debug("Return terminal: ret = {}".format(resp))
+            return resp
+        except Exception as err:
+            logger.error('err {}'.format(err))
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result("OtherError", msg="en")
+            logger.debug("Return terminal: ret = {}".format(resp))
+            return resp
+
+    def update_config_info(self, data):
+        logger.debug("data: {}".format(data))
+        request_data = data.get("data")
+        resp = get_error_result("Success", msg="en")
+        try:
+            ret = self.check_config(request_data)
+            if ret.get("code"):
+                logger.debug("Return terminal: ret = {}".format(ret))
+                return ret
+            # get group_uuid
+            group_uuid = None
+            redis_key = "yzy:terminal:education:groups"
+            groups_dict = self.get_cache(redis_key)
+            if not groups_dict:
+                request_url = "/api/v1/voi/terminal/education/conf_groups_list"
+                logger.debug("request yzy_server {}".format(request_url))
+                server_ret = self.http_client.post(request_url, {})
+                logger.debug("get yzy_server return {}, {}".format(request_url, server_ret))
+                if server_ret.get("code", -1) == 0:
+                    ret_data = server_ret.get('data', None)
+                    if ret_data and ret_data.get("groups") is not None:
+                        groups_dict = ret_data.get("groups")
+                        self.set_cache(redis_key, json.dumps(groups_dict), 10)
+                        logger.info("mac: %s set eduction groups config list in cache: %s" % (request_data["mac"],
+                                                                                               groups_dict))
+                    else:
+                        logger.error("get terminal eduction groups dict struct error: %s" % server_ret)
+                        raise Exception("server api data error!!")
+                else:
+                    logger.error("get terminal eduction groups dict error: server ret %s"% server_ret)
+                    return server_ret
+            else:
+                groups_dict = json.loads(groups_dict)
+            # 判断终端所属组的信息
+            group_uuids = list()
+            terminal_ip = request_data.get("ip")
+            for key, val in groups_dict.items():
+                group_uuids.append(key)
+                if terminal_ip in val:
+                    group_uuid = key
+            # else:
+            #     logger.error("return code: {}, message: {}".format(server_ret["code"], server_ret["msg"]))
+            terminal_values = {
+                'group_uuid': group_uuid,
+                'terminal_id': request_data["terminal_id"],
+                'mac': request_data["mac"],
+                'ip': request_data["ip"],
+                'mask': request_data["mask"],
+                'gateway': request_data["gateway"],
+                'dns1': request_data["dns1"],
+                'dns2': request_data.get("dns2", ""),
+                'is_dhcp': request_data["is_dhcp"],
+                'name': request_data["name"],
+                'platform': request_data["platform"],
+                'soft_version': request_data["soft_version"],
+                'register_time': dt.datetime.now(),
+                'conf_version': request_data["conf_version"],
+                'setup_info': json.dumps(request_data["setup_info"]),
+                'disk_residue': request_data["disk_residue"]
+            }
+            terminal_update_values = terminal_values.copy()
+            logger.debug("terminal mac:%s update config info: %s" % (request_data["mac"], terminal_update_values))
+            table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+            qry = table_api.select_terminal_by_mac(request_data["mac"])
+            update_group_uuid = group_uuid
+            if qry:
+                # if yzy_voi_terminal is not null, then need to check group valid
+                if qry.group_uuid != group_uuid:
+                    if qry.group_uuid in group_uuids:
+                        terminal_update_values["group_uuid"] = qry.group_uuid
+                        update_group_uuid = qry.group_uuid
+
                 table_api.update_terminal_by_mac(**terminal_update_values)
             else:
                 # table_api.add_terminal(terminal_values)
@@ -590,7 +747,7 @@ class TerminalTaskHandler(object):
                                 desktop_group["desktop_dns2"] = qry.dns2
                                 logger.debug("desktop_group: {} set bottom ip".format(
                                     desktop_group['desktop_group_uuid']))
-                            desktop_group.pop('desktop_enable_bottom_ip')
+                            # desktop_group.pop('desktop_enable_bottom_ip')
                     resp["data"] = ret_data
                     logger.debug("Return terminal: {}".format(resp))
                     return resp
@@ -602,7 +759,6 @@ class TerminalTaskHandler(object):
             logger.error(''.join(traceback.format_exc()))
             resp = get_error_result("OtherError", msg='en')
             return resp
-
 
     def verify_admin_user(self, data):
         logger.debug("data: {}".format(data))
@@ -640,14 +796,14 @@ class TerminalTaskHandler(object):
                 logger.debug("Mac not in yzy_voi_terminal, Return terminal error")
                 resp = get_error_result("TerminalNotLogin", msg="en")
                 return resp
-
+            conf_version = qry.conf_version
             cmd_name = data.get("data").get("service_name")
             with redis_lock.Lock(self.rds, '{}_lock'.format(cmd_name), 2):
                 # 1. search batch_num, mac
                 if self.rds.ping_server():
                     redis_key = 'voi_command:order:{}:{}'.format(qry.group_uuid, batch_no)
                     confirm_num = str(request_data['terminal_id'])
-                    json_data = self.rds.get(redis_key)
+                    json_data = self.rds.get(redis_key).decode('utf-8')
                     if json_data:
                         data_dict = json.loads(json_data)
                         macs = data_dict['order_macs'].split(',')
@@ -676,6 +832,9 @@ class TerminalTaskHandler(object):
                                 "confirm mac = {} , id = {} now redis data = {}".format(mac, confirm_num, data_dict))
                             # send order to other macs
                             # next_terminal_id = data_dict['start_id']
+                            # 更新终端序号
+                            table_api.update_terminal_by_mac(**{"mac": mac, "terminal_id": request_data['terminal_id'],
+                                                                "conf_version": int(conf_version) + 1})
                             next_terminal_id = data_dict['current_id']
                             while str(next_terminal_id) in confirm_ids:
                                 next_terminal_id += 1
@@ -732,7 +891,7 @@ class TerminalTaskHandler(object):
                 batch_no = max([int(key.decode().split(':')[-1]) for key in redis_keys]) if redis_keys else 0
                 key = 'voi_command:order:{}:{}'.format(qry.group_uuid, batch_no)
                 if batch_no:
-                    json_data = self.rds.get(key)
+                    json_data = self.rds.get(key).decode('utf-8')
                     data_dict = json.loads(json_data)
                     logger.debug("order_macs = {}".format(data_dict['order_macs']))
                     if mac in data_dict['order_macs']:
@@ -810,15 +969,18 @@ class TerminalTaskHandler(object):
             return
 
         desktop = data.get("desktop", {})
+        batch_no = data.get("batch_no", None)
         # todo 下发种子， 提交bt服务，记录bt任务
         logger.info("send torrent desktop: {}  mac: {}".format(desktop, mac))
         disks = desktop.get("disks", [])
         for disk in disks:
             torrent_file = disk.get("torrent_file", "")
-            if not os.path.exists(torrent_file):
+            disk_file = os.path.splitext(torrent_file)[0]
+            if not (os.path.exists(torrent_file) and os.path.exists(disk_file)):
                 logger.error("do send torrent file not exist: %s, mac: %s"% (torrent_file, mac))
                 continue
             params = dict()
+            params["desktop_group_uuid"] = desktop["desktop_group_uuid"]
             params["uuid"]= disk["uuid"]
             params["type"] =  disk["type"]
             params["sys_type"] = desktop["os_sys_type"]
@@ -826,16 +988,17 @@ class TerminalTaskHandler(object):
             params["real_size"] = disk["real_size"]
             params["reserve_size"] = disk["reserve_size"]
             params["torrent_file"] = disk["torrent_file"]
+            params["operate_id"] = disk["operate_id"]
             # 调bt服务添加任务
+            # 修改成启动线程请求，不管bt返回结果
             save_path = os.path.dirname(params["torrent_file"])
-            ret = current_app.bt_api.add_bt_task(params["torrent_file"], save_path)
-            if ret["code"] != 0:
-                logger.error("bt server add task fail:%s"% params)
-                continue
-            logger.info('mac: {} add bt task api return {}'.format(mac, ret))
-            torrent_id = ret["torrent_id"]
-
-            # torrent_id = "%s"% random.randint(1, 100000000)
+            th = threading.Thread(target=current_app.bt_api.add_bt_task, args=(params["torrent_file"],
+                                                                                   save_path, mac, batch_no))
+            th.start()
+            logger.info('mac: {} add bt task api, batch_no: {}'.format(mac, batch_no))
+            torrent_id = batch_no
+            task_uuid = create_uuid()
+            params.update({"task_uuid": task_uuid, "repeat_num": 0,})
             send_data = {
                 "cmd" : "send_torrent",
                 "data": {
@@ -846,34 +1009,83 @@ class TerminalTaskHandler(object):
 
             torrent_file = params["torrent_file"]
             disk_name = "voi_%s_%s"% (params["dif_level"], params["uuid"])
-            task_uuid = create_uuid()
+            torrent_name = os.path.basename(torrent_file)
             task_values = {
                 "uuid": task_uuid,
                 "torrent_id": torrent_id,
-                "torrent_name": os.path.basename(torrent_file),
+                "torrent_name": torrent_name,
                 "torrent_path": torrent_file,
                 "torrent_size": str(os.path.getsize(torrent_file)),
+                "desktop_name": desktop["desktop_group_name"],
+                "save_path": save_path,
                 "template_uuid": desktop["template_uuid"],
                 "disk_uuid": disk["uuid"],
                 "disk_name": disk_name,
+                "disk_size": size_to_G(os.path.getsize(disk_file), 4),
+                "disk_type": self.disk_type[int(disk["type"])],
                 "terminal_mac": mac,
                 "terminal_ip": terminal.ip,
                 "type": constants.BT_DOWNLOAD_TASK,
                 "status": 0,
                 "process": 0,
-                "download_rate": 0
+                "download_rate": 0,
+                "batch_no": torrent_id,
+                "sum": 1
             }
             # 计入任务队列
             # 判断是否已经存在任务
             logger.info("mac %s do send torrent task is exist or not ???"% mac)
             task_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
-            task = task_api.select_task_by_torrent_id(torrent_id)
-            if not task:
-                task_api.add_task(task_values)
+            # 清空当前终端所有的任务
+            tasks = task_api.select_terminal_bt_task(mac, torrent_name)
+            if tasks:
+                task_api.delete_tasks(tasks)
+            # if not task:
+            task_api.add_task(task_values)
             # 进入消息队列
             msg = json.dumps(send_data)
             self.msg_center.public(msg)
             logger.info("send desktop callback push msg success: %s"% msg)
+
+    def send_torrent_callback(self, mac, data):
+        """
+        下发种子回调
+        :param data:
+        :return:
+        """
+        logger.info("mac %s send torrent callback: %s" % (mac, data))
+        # 删除消息队列中的任务
+        batch_no = data["data"]["batch_no"]
+        all_task = self.repeat_msg_center.get_all_items()
+        for task in all_task:
+            logger.info(task)
+            task_dict = json.loads(task)
+            data = task_dict.get("data", {})
+            task_uuid = data["params"]["task_uuid"]
+            terminal_mac = data.get("mac")
+            if task_uuid == batch_no and terminal_mac == mac:
+                self.repeat_msg_center.clear_value(task)
+                logger.info("mac %s send torrent clear success callback: %s"% (mac, data))
+        logger.info("mac: %s send torrent callback push msg success: %s"% (mac, data))
+
+    def clear_all_desktop_callback(self, mac, data):
+        """
+        清空所有桌面回调
+        :param data:
+        :return:
+        """
+        logger.info("mac %s clear all desktop callback: %s" % (mac, data))
+        # 删除消息队列中的任务
+        batch_no = data["batch_no"]
+        table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+        terminal = table_api.select_terminal_by_mac(mac)
+        if not terminal:
+            logging.warning("mac %s clear all desktop callback, terminal not exist")
+            return
+        # 清空终端所有桌面
+        bind_api = db_api.YzyVoiTerminalToDesktopsCtrl(current_app.db)
+        bind_api.delete_all_bind_by_terminal(terminal.uuid)
+        logger.info("mac: %s clear all desktop callback success: %s"% (mac, data))
 
     def command_response(self, data):
         logger.debug('{}.{} be called'.format(self.__class__.__name__, sys._getframe().f_code.co_name))
@@ -885,7 +1097,7 @@ class TerminalTaskHandler(object):
             logger.debug("need not handle response message: {}".format(ignore_cmds))
             return resp
         try:
-            if data.get("code"):
+            if data.get("code") and cmd_name != "send_torrent":
                 logger.error("terminal return error: {}-{}}}}".format(data.get("code"), data.get("msg")))
                 return resp
             response_data = data.get("data").get("data")
@@ -893,7 +1105,8 @@ class TerminalTaskHandler(object):
             mac = response_data["mac"]
             # get redis original message
             if self.rds.ping_server():
-                with redis_lock.Lock(self.rds, '{}_lock'.format(cmd_name), 2):
+                if cmd_name == "send_desktop":
+                    # with redis_lock.Lock(self.rds, '{}_lock'.format(cmd_name), 2):
                     redis_key = 'voi_command:{}:{}'.format(cmd_name, batch_no)
                     logger.debug("redis_key: {}".format(redis_key))
                     redis_data = self.rds.get(redis_key).decode('utf-8')
@@ -902,10 +1115,29 @@ class TerminalTaskHandler(object):
                     confirm_macs.append(mac)
                     data_dict["confirm_macs"] = ','.join(confirm_macs)
                     self.rds.set(redis_key, json.dumps(data_dict))
-                callback = "%s_callback" % cmd_name
-                if hasattr(self, callback) and data_dict.get("params"):
-                    func = getattr(self, callback)
-                    func(mac, data_dict["params"])
+                    callback = "%s_callback" % cmd_name
+                    if hasattr(self, callback) and data_dict.get("params"):
+                        func = getattr(self, callback)
+                        func(mac, data_dict["params"])
+                elif cmd_name == "send_torrent":
+                    callback = "%s_callback" % cmd_name
+                    if hasattr(self, callback) :
+                        func = getattr(self, callback)
+                        func(mac, data["data"])
+                else:
+                    with redis_lock.Lock(self.rds, '{}_lock'.format(cmd_name), 2):
+                        redis_key = 'voi_command:{}:{}'.format(cmd_name, batch_no)
+                        logger.debug("redis_key: {}".format(redis_key))
+                        redis_data = self.rds.get(redis_key).decode('utf-8')
+                        data_dict = json.loads(redis_data)
+                        confirm_macs = [] if 0 == len(data_dict['confirm_macs']) else data_dict['confirm_macs'].split(',')
+                        confirm_macs.append(mac)
+                        data_dict["confirm_macs"] = ','.join(confirm_macs)
+                        self.rds.set(redis_key, json.dumps(data_dict))
+                    callback = "%s_callback" % cmd_name
+                    if hasattr(self, callback) and data_dict.get("params"):
+                        func = getattr(self, callback)
+                        func(mac, data_dict["params"])
             else:
                 logger.error('redis ping err, please check redis service!!!')
 
@@ -931,7 +1163,9 @@ class TerminalTaskHandler(object):
                      "disk_name": "xxxxxxx",
                      "torrent_name": "xxxx",
                      "torrent_size": 10234,
-                     "torrent_path": "xxxxx"
+                     "torrent_path": "xxxxx",
+                     "batch_no" : "xxxx", # 任务批次号
+                     "sum" : ""         # 任务总数
                 }
         }
         :param data:
@@ -940,20 +1174,96 @@ class TerminalTaskHandler(object):
         logger.info("client upload template torrent file: %s" % data["cmd"])
         # 保存种子
         try:
+            resp = errcode.get_error_result("Success", msg="en")
             _data = data.get("data")
-            torrent_base64 = _data["payload"]
+            terminal_mac = _data["mac"]
+            terminal_ip = _data["ip"]
+            is_json = _data["is_json"]
+            batch_no = data.get("batch_no", int(time.time()))
+            sum = data.get("sum", 1)
+            # dir_path = "/opt/slow/instances/_base/"
+            file_size = 0
+            if not is_json:
+                torrent_base64 = _data["payload"]
+                torrent_bin = base64.b64decode(torrent_base64.encode("utf-8"))
+                torrent_file, disk_uuid, disk_type, dif_level = YzyTorrentStruct().save(torrent_bin)
+            else:
+                torrent_base64 = _data["data"]
+                # torrent_bin = base64.b64encode(torrent_base64.encode("utf-8"))
+                torrent_file = _data["torrent_file"].lower()
+                # file_path = os.path.join(dir_path, torrent_file)
+                # with open(file_path, "wb") as f:
+                #     f.write(torrent_bin)
+                disk_uuid = _data["uuid"].lower()
+                disk_type = _data["type"]
+                dif_level = _data["dif_level"]
+                file_size = _data.get("file_size", 0)
+            request_data = {
+                "torrent_file": torrent_file,
+                "torrent_base64": torrent_base64,
+                "disk_uuid" : disk_uuid,
+                "disk_type" : disk_type,
+                "dif_level" : dif_level
+            }
+            request_url = "/api/v1/voi/template_disk/save_torrent"
+            logger.debug("request yzy_server {}, {}".format(request_url, request_data))
+            server_ret = self.http_client.post(request_url, request_data)
+            logger.debug("get yzy_server {} {},".format(request_url, server_ret))
+            ret_code = server_ret.get("code", -1)
+            if ret_code != 0:
+                logger.error("terminal %s upload torrent request server save file fail"% terminal_mac)
+                msg = get_error_name(ret_code)
+                resp["code"] = ret_code
+                resp["msg"] = msg
+                return resp
 
-            # torrent_dir = constants.DEFAULT_SYS_PATH
-            # torrent_dir = constants.DEFAULT_SYS_PATH
-            torrent_bin = base64.b64decode(torrent_base64.encode("utf-8"))
-            torrent_file = YzyTorrentStruct().save(torrent_bin, "/opt/slow/instances/_base/")
             # 添加上传任务
-            save_path = torrent_file.replace(".torrent", "")
+            torrent_file = server_ret["data"]["torrent_file"]
+            save_path = server_ret["data"]["save_path"]
             ret = current_app.bt_api.add_bt_task(torrent_file, save_path)
             if ret["code"] != 0:
                 logger.error("bt server add task fail:%s , %s", torrent_file, save_path)
                 return get_error_result("TerminalTorrentUploadFail", msg="en")
+            device_info_api = db_api.YzyVoiDeviceInfoTableCtrl(current_app.db)
+            device_info = device_info_api.get_device_by_uuid(disk_uuid)
+            if not device_info:
+                logger.error("client upload template torrent file, device not exist: %s"% disk_uuid)
+                return get_error_result("UploadDeviceNotExist", msg="en")
+            table_ctl = db_api.YzyVoiDesktopGroupTableCtrl(current_app.db)
+            desktop_group = table_ctl.get_desktop_group_by_template(device_info.instance_uuid)
+            if not desktop_group:
+                logger.error("client upload template torrent file, desktop group not exist: %s"%
+                                        device_info.instance_uuid)
+                return get_error_result("UploadDeviceNotExist", msg="en")
 
+            # 增加bt上传任务记录
+            task_uuid = create_uuid()
+            torrent_id = ret["torrent_id"]
+            bt_task_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+            # todo 增加种子上传任务
+            task_values = {
+                "uuid": task_uuid,
+                "torrent_id": torrent_id,
+                "torrent_name": os.path.basename(torrent_file),
+                "torrent_path": torrent_file,
+                "torrent_size": str(os.path.getsize(torrent_file)),
+                "save_path": save_path,
+                "desktop_name": desktop_group.name,
+                "template_uuid": device_info.instance_uuid,
+                "disk_uuid": disk_uuid,
+                "disk_name": "voi_%s_%s"% (dif_level, disk_uuid),
+                "disk_size": size_to_G(int(file_size), 4),
+                "disk_type": self.disk_type[int(disk_type)],
+                "terminal_mac": terminal_mac,
+                "terminal_ip": terminal_ip,
+                "type": constants.BT_UPLOAD_TASK,
+                "status": 0,
+                "process": 0,
+                "download_rate": 0,
+                "batch_no": batch_no,
+                "sum": sum
+            }
+            bt_task_api.add_task(task_values)
             resp = get_error_result("Success", msg="en")
             logger.info("client upload template torrent file success!!!!")
             return resp
@@ -1042,6 +1352,7 @@ class TerminalTaskHandler(object):
             return resp
 
     def check_upload_state(self, data):
+        """ 检测是否可以上传差分 """
         logger.debug("check_upload_state data: {}".format(data))
         request_data = data.get("data", None)
         resp = errcode.get_error_result("Success", msg="en")
@@ -1065,6 +1376,10 @@ class TerminalTaskHandler(object):
                 if ret_code != 0:
                     logger.error("request yzy_server check_upload_state return error: %s" % server_ret)
                 server_ret["msg"] = errcode.get_error_name(ret_code)
+                # 上传需要一个批次号，区分系统盘，数据盘上传的完整性
+                server_ret["data"].update({
+                    "batch_no": self.create_batch_no()
+                })
                 logger.debug("Return terminal: server_ret = {}".format(server_ret))
                 return server_ret
             else:
@@ -1137,7 +1452,7 @@ class TerminalTaskHandler(object):
         pool_name = "template-voi"
         try:
             _data = request_data.copy()
-            _data.pop('mac')
+            # _data.pop('mac')
             _data["pool_name"] = pool_name
             request_url = "/api/v1/voi/template/start_upload"
             logger.debug("request yzy_server {}, {}".format(request_url, _data))
@@ -1157,7 +1472,7 @@ class TerminalTaskHandler(object):
             #user = "voi_guest"
             #password = "qwe123,."
             user = "root"
-            password = "123qwe,."
+            password = current_app.config.get('ROOT_PASSWORD', '123qwe,.')
             resp["data"] = {
                 "user": user,
                 "password": password,
@@ -1223,6 +1538,66 @@ class TerminalTaskHandler(object):
             resp = errcode.get_error_result(error="OtherError", msg="en")
             return resp
 
+    def bt_task_state(self, data):
+        """
+        终端上报bt任务状态
+        {
+                "torrent_name": xxxxxxx,
+                "mac": "xxxxxxxxxx",
+                "progress": 11,
+                "status": 1
+        }
+
+        * return:
+          {
+              "code": 0,
+              "msg": "Success"
+          }
+        """
+        logger.debug("bt task data: {}".format(data))
+        request_data = data.get("data")
+        resp = errcode.get_error_result("Success", msg="en")
+        try:
+            torrent_name = request_data.get("torrent_name", "")
+            terminal_mac = request_data.get("mac", "")
+            progress = request_data.get("progress", 0)
+            download_rate = request_data.get("download_rate", 0)
+            upload_rate = request_data.get("upload_rate", 0)
+            # task_type = data.get("state")
+            bt_task_table = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+            tasks = bt_task_table.select_terminal_bt_task(terminal_mac, torrent_name)
+            if not tasks:
+                logger.error("%s terminal bt task %s not exist" % (terminal_mac, torrent_name))
+                resp = errcode.get_error_result("TerminalBtTaskNotExist", msg="en")
+                return resp
+            task = tasks[-1]
+            if len(tasks) > 1:
+                bt_task_table.delete_tasks(tasks[:-1])
+            state = request_data.get("state", "")
+            status = constants.BT_TASK_INIT
+            if state == "finished":
+                status = constants.BT_TASK_FINISH
+            elif state in ("downloading", "checking"):
+                status = constants.BT_TASK_CHECKING_OR_DOWNING
+            elif state == "seeding":
+                status = constants.BT_TASK_SEEDING
+                # progress = 0
+            values = {
+                "process": progress,
+                "download_rate": download_rate,
+                "upload_rate": upload_rate,
+                "status": status,
+                "state": state
+            }
+            bt_task_table.update_task_values(task, values)
+            logger.info("terminal %s update bt task %s success data: %s!"%(terminal_mac, torrent_name, data))
+            return resp
+        except Exception as err:
+            logger.error('err {}'.format(err))
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError", msg="en")
+            return resp
+
     def diff_disk_upload(self, data):
         """
         {
@@ -1279,6 +1654,7 @@ class TerminalTaskHandler(object):
             desktop_group_uuid = request_data.get("desktop_group_uuid", None)
             diff_disk_uuid = request_data.get("diff_disk_uuid", None)
             diff_level = request_data.get("diff_level", None)
+            diff_disk_type = request_data.get("diff_disk_type", None)
             if not (mac and desktop_group_uuid and diff_disk_uuid):
                 return errcode.get_error_result("MessageError", msg='en')
             table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
@@ -1291,7 +1667,8 @@ class TerminalTaskHandler(object):
             _data = {
                 "desktop_group_uuid": desktop_group_uuid,
                 "diff_disk_uuid": diff_disk_uuid,
-                "diff_level": diff_level
+                "diff_level": diff_level,
+                "diff_disk_type": diff_disk_type
             }
             request_url = "/api/v1/voi/template_disk/download"
             logger.debug("request yzy_server {}, {}".format(request_url, _data))
@@ -1306,10 +1683,13 @@ class TerminalTaskHandler(object):
                 return resp
 
             params = dict()
+            diff_disk_type = server_ret_data.get("diff_disk_type", "")
+            params["desktop_group_uuid"] = desktop_group_uuid
             params["uuid"] = diff_disk_uuid
-            params["type"] = server_ret_data.get("diff_disk_type", "")
+            params["type"] = diff_disk_type
             params["sys_type"] = server_ret_data.get("os_sys_type", 0)
             params["dif_level"] = diff_level
+            params["operate_id"] = server_ret_data.get("operate_id", 0)
             params["real_size"] = server_ret_data.get("real_size", 0)
             params["reserve_size"] = server_ret_data.get("reserve_size", 0)
             params["torrent_file"] = server_ret_data.get("torrent_file", "")
@@ -1324,6 +1704,8 @@ class TerminalTaskHandler(object):
             torrent_id = ret["torrent_id"]
 
             # torrent_id = "%s"% random.randint(1, 100000000)
+            task_uuid = create_uuid()
+            params.update({"task_uuid": task_uuid, "repeat_num": 0, })
             send_data = {
                 "cmd": "send_torrent",
                 "data": {
@@ -1341,20 +1723,28 @@ class TerminalTaskHandler(object):
                 "torrent_name": os.path.basename(torrent_file),
                 "torrent_path": torrent_file,
                 "torrent_size": str(os.path.getsize(torrent_file)),
+                "desktop_name": request_data.get("desktop_group_name", ""),
                 "template_uuid": server_ret_data.get("template_uuid", ""),
                 "disk_uuid": diff_disk_uuid,
                 "disk_name": disk_name,
+                "save_path": save_path,
+                "disk_size": server_ret_data.get("disk_size", 0),
+                "disk_type": self.disk_type[int(diff_disk_type)],
                 "terminal_mac": mac,
                 "terminal_ip": terminal.ip,
                 "type": constants.BT_DOWNLOAD_TASK,
                 "status": 0,
                 "process": 0,
-                "download_rate": 0
+                "download_rate": 0,
+                "batch_no": torrent_id,
+                "sum": 1
             }
             task_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
-            task = task_api.select_task_by_torrent_id(torrent_id)
-            if not task:
-                task_api.add_task(task_values)
+            tasks = task_api.select_terminal_bt_task(mac, torrent_file)
+            if tasks:
+                task_api.delete_tasks(tasks)
+
+            task_api.add_task(task_values)
             msg = json.dumps(send_data)
             self.msg_center.public(msg)
             return resp
@@ -1395,3 +1785,290 @@ class TerminalTaskHandler(object):
             logger.error(''.join(traceback.format_exc()))
             resp = errcode.get_error_result(error="OtherError", msg="en")
             return resp
+
+    def put_desktop_group_list(self, data):
+        """
+        {
+           "sys_disk_uuids": "111111111111,222222222222,3333333333333",
+           "mac": "00:0C:29:51:B1:DF"
+        }
+        """
+        logger.debug("input data: {}".format(data))
+        resp = errcode.get_error_result("Success", msg="en")
+        sys_disk_uuids = data.get("data").get("sys_disk_uuids", None)
+        mac = data.get("data").get("mac", None)
+        if not mac:
+            return errcode.get_error_result("MessageError", msg='en')
+        if not sys_disk_uuids:
+            logger.warning("server put desktop group list not sys_disk: %s"% mac)
+            return errcode.get_error_result("Success", msg="en")
+
+        try:
+            table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+            qry = table_api.select_terminal_by_mac(mac)
+            if qry:
+                request_server_data = {
+                    "cmd": "update_desktop_sent_flag",
+                    "sys_disk_uuids": sys_disk_uuids,
+                    "mac": mac,
+                    "group_uuid": qry.group_uuid
+                }
+                request_url = "/api/v1/voi/terminal/education/update_desktop_sent_flag"
+                logger.debug("request yzy_server {}, {}".format(request_url, request_server_data))
+                server_ret = self.http_client.post(request_url, request_server_data)
+                logger.debug("get yzy_server return {}, {}".format(request_url, server_ret))
+                ret_code = server_ret.get("code", -1)
+                if ret_code != 0:
+                    logger.error("request yzy_server update_desktop_sent_flag return error: %s" % server_ret)
+                    resp["msg"] = errcode.get_error_name(ret_code)
+                    resp["code"] = ret_code
+            else:
+                logger.error("TerminalRecordNotExist: {}".format(mac))
+                resp = errcode.get_error_result("TerminalRecordNotExist", msg="en")
+            logger.debug("Return terminal: resp = {}".format(resp))
+            return resp
+        except Exception as err:
+            logger.error(err)
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError", msg="en")
+            return resp
+
+    def terminal_online_update(self, data):
+        """
+        {
+           "terminals": [
+                {"mac": xxxxxxxx, "status": 1}
+           ]
+        }
+        """
+        logger.debug("update terminals status input data: {}".format(data))
+        resp = errcode.get_error_result("Success", msg="en")
+        terminals = data.get("data").get("terminals", [])
+        try:
+            table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+            change_mac = list()
+            for terminal in terminals:
+                table_api.update_terminal_status_by_mac(**terminal)
+                # mac = terminal.get("mac")
+                # status = terminal.get("status", 0)
+                # qry = table_api.select_terminal_by_mac(mac)
+                # if qry and qry.status == status:
+                #     table_api.update_terminal_status(qry, status)
+                #     change_mac.append(mac)
+                # else:
+
+                    # logger.error("TerminalRecordNotExist: {}".format(mac))
+                    # resp = errcode.get_error_result("TerminalRecordNotExist", msg="en")
+            logger.debug("Return terminal: resp = {}, update macs {}".format(resp, (",".join(change_mac))))
+            return resp
+        except Exception as err:
+            logger.error(err)
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError", msg="en")
+            return resp
+
+    def upload_log(self, data):
+        """
+        {
+            "cmd": "upload_log",
+            "data": {
+                "payload": log_file_base64,
+                "terminal_mac": "",
+                "terminal_ip": "",
+            }
+        }
+        :param data:
+        :return:
+        """
+        resp = errcode.get_error_result()
+        terminal_mac = data["data"].get("terminal_mac")
+        terminal_ip = data["data"].get("terminal_ip")
+        # terminal_mac = data.get("data", {}).get("terminal_mac")
+        logger.debug("terminal upload log start !!!, {}:{}".format(terminal_mac, terminal_ip))
+        log_file_base64 = data["data"].get("payload")
+        if not log_file_base64:
+            logger.warning("terminal upload log warning: {}:{} not log_file".format(terminal_mac, terminal_ip))
+            return resp
+        log_file_dir = constants.TERMINAL_LOG_PATH
+        if not os.path.exists(log_file_dir):
+            try:
+                os.makedirs(log_file_dir)
+            except:
+                logger.error("terminal {}:{} upload log error, dir create fail".format(terminal_mac, terminal_ip))
+                return errcode.get_error_result("OtherError", msg="en")
+        _timestamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+        log_file_name = "%s_%s_%s.log"% (terminal_mac, terminal_ip, _timestamp)
+        log_file = os.path.join(log_file_dir, log_file_name)
+        log_file_bin = base64.b64decode(log_file_base64)
+        with open(log_file, "wb") as f:
+            f.write(log_file_bin)
+        logger.info("terminal upload log success !!!, {}:{}".format(terminal_mac, terminal_ip))
+        return resp
+
+    def bt_upload_state(self, data):
+        """
+        终端上传差分盘任务状态
+        {
+                "torrent_name": xxxxxxx,
+                "mac": "xxxxxxxxxx"
+        }
+
+        * return:
+          {
+              "code": 0,
+              "msg": "Success",
+              "data": {
+                "progress": "",
+                "rate": "",
+                "state": ""
+              }
+          }
+        """
+        logger.debug("terminal upload bt task data: {}".format(data))
+        request_data = data.get("data")
+        resp = errcode.get_error_result("Success", msg="en")
+        try:
+            torrent_name = request_data.get("torrent_name", "")
+            terminal_mac = request_data.get("mac", "")
+            # progress = request_data.get("progress", 0)
+            # download_rate = request_data.get("download_rate", 0)
+            # task_type = data.get("state")
+            bt_task_table = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+            task = bt_task_table.select_terminal_bt_upload_task(terminal_mac, torrent_name)
+            if not task:
+                logger.error("%s terminal bt task %s not exist" % (terminal_mac, torrent_name))
+                resp = errcode.get_error_result("TerminalBtUploadTaskNotExist", msg="en")
+                return resp
+            values = {
+                "process": task.process,
+                "rate": task.download_rate,
+                # "status": status,
+                "state": task.state
+            }
+            # bt_task_table.update_task_values(task, values)
+            logger.info("terminal %s check bt upload task %s success data: %s!"%(terminal_mac, torrent_name, data))
+            resp["data"] = values
+            return resp
+        except Exception as err:
+            logger.error('err {}'.format(err))
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError", msg="en")
+            return resp
+
+    def query_teach_pc(self, data):
+        logger.debug("Receive query teach pc data: {}".format(data))
+        request_data = data.get("data")
+        resp = errcode.get_error_result("Success", msg="en")
+        room_num = request_data.get("room_num")
+        table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+        terminal_objs = table_api.select_all_terminal()
+        for term_obj in terminal_objs:
+            si = json.loads(term_obj.setup_info)
+            teach_config = si.get("teach_config")
+            if (teach_config and teach_config.get("room_num") == \
+                    room_num and teach_config.get("is_teach_pc")):
+                logger.info("Teach pc terminal already exist: %s." % term_obj.mac)
+                resp["data"] = {"is_exist": 1}
+                return resp
+        logger.info("No teach pc terminal find in this room: %s." % room_num)
+        resp["data"] = {"is_exist": 0}
+        return resp
+
+    def update_performance(self, data):
+        logger.debug("terminal update performance data: {}".format(data))
+        terminal_data = data.get("data")
+        terminal_mac = data.get("mac")
+        resp = errcode.get_error_result("Success", msg="en")
+        try:
+            table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+            terminal = table_api.select_terminal_by_mac(terminal_mac)
+            if not terminal_mac:
+                logger.error("terminal update performance error: param error")
+                resp = errcode.get_error_result("RequestParamError", msg="en")
+                return resp
+            task_api = db_api.YzyTerminalPerformanceCtrl(current_app.db)
+            performance = task_api.select_performance_to_uuid(terminal.uuid)
+            cpu_value = 0
+            hard_value = 0
+            memory_value = 0
+            cpu_sum = 0
+            hard_sum = 0
+            memory_sum = 0
+            hard_count = 0
+            memory_count = 0
+            cpu_info = ""
+            hard_info = ""
+            memory_info = ""
+            for obj in terminal_data['desc']:
+                # index = obj['name'].find('cpu')
+                # if index != -1:
+                #     cpu_count += 1
+                for i in obj['desc']:
+                    if i['Name'].startswith("CPU"):
+                        cpu_sum += int(obj['count'])
+                        cpu_value += int(i['Value'])
+                        cpu_info = obj['name']
+                    if i['Name'].endswith("Space"):
+                        hard_sum += int(obj['count'])
+                        hard_value += int(i['Value'])
+                        hard_info = obj['name']
+                    if i['Name'].endswith("Memory"):
+                        memory_value += int(i['Value'])
+                        memory_sum = int(obj['count'])
+                        memory_info = obj['name']
+
+            if not performance:
+                task_info = {
+                    "uuid": create_uuid(),
+                    "terminal_uuid": terminal.uuid,
+                    "terminal_mac": terminal_mac,
+                    "cpu_ratio": cpu_value / cpu_sum,
+                    "memory_ratio": memory_value / memory_sum,
+                    "hard_disk": hard_value / hard_sum,
+                    "cpu": str(cpu_sum) + "*" + cpu_info,
+                    "memory": memory_info,
+                    "network": "",
+                    "hard": hard_info,
+                }
+                task_api.add_performance(task_info)
+                return resp
+            if performance.cpu == cpu_info and performance.hard == hard_info and performance.memory == memory_info:
+                task_info = {
+                    "cpu_ratio": cpu_value / cpu_sum,
+                    "memory_ratio": memory_value / memory_sum,
+                    "hard_disk": hard_value / hard_sum
+                }
+                task_api.update_performance_info(performance, task_info)
+                return resp
+            task_info = {
+                "cpu_ratio": cpu_value / cpu_sum,
+                "memory_ratio": memory_value / memory_sum,
+                "hard_disk": hard_value / hard_sum,
+                "cpu": str(cpu_sum) + "*" + cpu_info,
+                # "memory": memory_info,
+                # "network": "",
+                # "hard": hard_info,
+            }
+            task_api.update_performance_info(performance, task_info)
+            content = ""
+            if performance.cpu != cpu_info:
+                content += "cpu变更,cpu变更为{}核".format(cpu_sum)
+            if performance.hard != hard_info:
+                content += "硬盘变更,硬盘变更为{}G".format(hard_count)
+            if performance.memory == memory_info:
+                content += "内存变更,内存变更为{}G".format(memory_count)
+            hard_ware = {
+                "uuid": create_uuid(),
+                "terminal_uuid": terminal.uuid,
+                "terminal_mac": terminal_mac,
+                "content": content
+            }
+            hard_api = db_api.YzyTerminalHardwareCtrl(current_app.db)
+            hard_api.add_hard_ware(hard_ware)
+            return resp
+        except Exception as err:
+            logger.error(err)
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError", msg="en")
+            return resp
+

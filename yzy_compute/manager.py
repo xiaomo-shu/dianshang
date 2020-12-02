@@ -51,7 +51,6 @@ def run():
         def load(self):
             return self.application
 
-    app.logger.setLevel(app.config.get('LOG_LEVEL', logging.INFO))
     default_workers = cpu_count() * 2 + 1
     if default_workers > constants.DEFAULT_MAX_WORKER:
         default_workers = constants.DEFAULT_MAX_WORKER
@@ -62,7 +61,6 @@ def run():
         'worker_connections': CONF.addresses.get_by_default('worker_connnections', 10000),
         'backlog': CONF.addresses.get_by_default('backlog', 2048),
         'timeout': CONF.addresses.get_by_default('timeout', 3600),
-        'loglevel': CONF.addresses.get_by_default('log_level', 'info'),
         'pidfile': CONF.addresses.get_by_default('pid_file', 'yzy_compute.pid'),
     }
     logging.info("start manager run")

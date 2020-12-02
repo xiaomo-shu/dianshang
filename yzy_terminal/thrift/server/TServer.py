@@ -230,7 +230,7 @@ class TThreadPoolServer(TServer):
         while True:
             try:
                 client = self.serverTransport.accept()
-                print("New client connected: {}".format(client.handle.getpeername()))
+                logger.info("New client connected: {}", client.handle.getpeername())
                 if not client:
                     continue
                 self.clients.put(client)

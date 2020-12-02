@@ -2,21 +2,23 @@ import datetime
 import logging
 import os
 import json
-import configparser
 from flask import current_app
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.combining import OrTrigger
 from yzy_server.database import apis as db_api
+from yzy_server.database import models
 from yzy_server.extensions import db
 from yzy_server.crontab_tasks import YzyAPScheduler
 from common import constants
-from common.utils import get_error_result, create_uuid, single_lock, terminal_post
-from thrift.protocol import TBinaryProtocol, TMultiplexedProtocol
-from thrift.transport import TSocket, TTransport
-from ukey import UKeyServer
-from ukey.ttypes import Registry_Info
-from common.config import SERVER_CONF
-from .desktop_ctl import InstanceController
+from common.utils import get_error_result, create_uuid, single_lock, terminal_post, compute_post
+# from thrift.protocol import TBinaryProtocol, TMultiplexedProtocol
+# from thrift.transport import TSocket, TTransport
+# from ukey import UKeyServer
+# from ukey.ttypes import Registry_Info
+from yzy_server.ukey_tcp_client import UkeyClient
+from .desktop_ctl import InstanceController, DesktopController
 from .node_ctl import NodeController
+from yzy_server.utils import read_file_md5, ha_sync_file
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,7 @@ CRONTAB_DESKTOP = 1
 CRONTAB_NODE = 2
 CRONTAB_TERMINAL = 3
 CRONTAB_LOG = 4
+CRONTAB_COURSE_SCHEDULE = 5
 
 
 class AdminAuthController(object):
@@ -70,18 +73,23 @@ class DatabaseController(object):
         time_stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
         target_file = "%s.bak" % time_stamp
         back_file = self.exec_back(db_user, db_pwd, db_name, target_file)
+        md5_sum = ""
         status = 0
         if not back_file:
             logger.error("request database back fail")
             status = 1
             # return get_error_result("DatabaseBackFail")
+        else:
+            md5_sum = read_file_md5(back_file)
+
         values = {
             "name": target_file,
             "type": 0,
             "path": back_file,
             "size": self.get_file_size(back_file),
             "node_uuid": node.uuid,
-            "status": status
+            "status": status,
+            "md5_sum": md5_sum
         }
         try:
             db_api.create_database_back(values)
@@ -89,7 +97,7 @@ class DatabaseController(object):
         except Exception as e:
             logging.info("database back failed:%s", e)
             return get_error_result("DatabaseBackFail")
-        return get_error_result("Success")
+        return get_error_result("Success", data={"path": back_file})
 
     def delete_backup(self, data):
         backup_id = data.get("id", '')
@@ -145,6 +153,8 @@ class CrontabController(object):
                             #     params["day_of_week"] = ",".join(list(set(weeks)))
                         elif cycle == "month":
                             params["day"] = item.values if item.values else constants.SCHEDULER_MONTH_DAY
+                        elif cycle == "course":
+                            params = json.loads(item.values)
                         else:
                             pass
                         kwargs = json.loads(item.params)
@@ -154,9 +164,22 @@ class CrontabController(object):
                             kwargs["db_password"] = app.config.get("DATABASE_PASSWORD", "")
                             kwargs["db_name"] = app.config.get("DATABASE_NAME", "")
                         func = getattr(self, item.func)
-                        trigger = CronTrigger(**params)
-                        logger.info("add crontab work, func:%s, params:%s", func.__name__, params)
+
+                        # 如果是课表定时任务，需要使用OrTrigger
+                        if rs.type == 5:
+                            cron_trigger_list = list()
+                            for cron_dict in params["cron"]:
+                                cron_trigger_list.append(CronTrigger(
+                                    start_date=params["start_date"],
+                                    end_date=params["end_date"],
+                                    hour=cron_dict["hour"],
+                                    minute=cron_dict["minute"]
+                                ))
+                            trigger = OrTrigger(cron_trigger_list)
+                        else:
+                            trigger = CronTrigger(**params)
                         shche.add_job(jobid=item.uuid, func=func, trigger=trigger, kwargs=kwargs)
+                        logger.info("add crontab work, func:%s, params:%s", func.__name__, params)
 
     def check_cron(self, cron_dict):
         """ 检测cron 参数"""
@@ -223,9 +246,12 @@ class CrontabController(object):
             "type": 1,
             "path": back_file,
             "size": DatabaseController().get_file_size(back_file),
-            "node_uuid": node.uuid
+            "node_uuid": node.uuid,
+            "md5_sum": read_file_md5(back_file)
         }
         try:
+            # 如果启用了HA，把数据库备份文件同步给备控，未启用则不同步
+            ha_sync_file([{"path": back_file}])
             db_api.create_database_back(values)
             logger.info("database back [%s] success", back_file)
         except Exception as e:
@@ -260,9 +286,12 @@ class CrontabController(object):
     # def instance_crontab_func_with_lock(self, **kwargs):
     #     self.instance_crontab_func(**kwargs)
 
-    def instance_crontab_func(self, cmd, data):
+    def instance_crontab_func(self, cmd, data, task_uuid):
         """ 桌面定时任务 """
         logger.info("instance crontab exec: %s start", cmd)
+        task_obj = db_api.get_task_info_first({"task_uuid": task_uuid})
+        task_obj.update({"status": constants.TASK_RUNNING})
+        task_obj.soft_update()
         for item in data:
             if "on" == cmd:
                 InstanceController().start_instances(item)
@@ -270,16 +299,23 @@ class CrontabController(object):
                 InstanceController().stop_instances(item)
             else:
                 logger.error("invalid cmd:%s", cmd)
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
         logger.info("exec instances crontab task success")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return
 
     # @single_lock
     # def node_crontab_func_with_lock(self, **kwargs):
     #     self.node_crontab_func(**kwargs)
 
-    def node_crontab_func(self, cmd, data):
+    def node_crontab_func(self, cmd, data, task_uuid):
         """ 节点定时任务 """
         logger.info("node crontab exec: %s start", cmd)
+        task_obj = db_api.get_task_info_first({"task_uuid": task_uuid})
+        task_obj.update({"status": constants.TASK_RUNNING})
+        task_obj.soft_update()
         for item in data:
             if "off" == cmd:
                 from yzy_server import create_app
@@ -288,16 +324,23 @@ class CrontabController(object):
                     NodeController().shutdown_node(item['uuid'])
             else:
                 logger.error("invalid cmd:%s", cmd)
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
         logger.info("exec node crontab task success")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return
 
     # @single_lock
     # def terminal_crontab_func_with_lock(self, **kwargs):
     #     self.terminal_crontab_func(**kwargs)
 
-    def terminal_crontab_func(self, cmd, data, disposable=None):
+    def terminal_crontab_func(self, cmd, data, task_uuid):
         """ 终端定时任务 """
         logger.info("terminal crontab exec %s start", cmd)
+        task_obj = db_api.get_task_info_first({"task_uuid": task_uuid})
+        task_obj.update({"status": constants.TASK_RUNNING})
+        task_obj.soft_update()
         mac_list = []
         for item in data:
             mac_list.append(item['mac'])
@@ -322,6 +365,13 @@ class CrontabController(object):
             #     detail.soft_update()
         else:
             logger.error("invalid cmd:%s", cmd)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+
+        logger.info("exec node crontab task success")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
+        return
 
     # @single_lock
     # def log_crontab_func_with_lock(self, **kwargs):
@@ -491,8 +541,18 @@ class CrontabController(object):
         """
         cron_list = params.get("cron", [])
         status = params.get("status", 1)
+        task_uuid = create_uuid()
+        # 添加任务信息记录
+        task_data = {
+            "uuid": create_uuid(),
+            "task_uuid": task_uuid,
+            "name": constants.NAME_TYPE_MAP[10],
+            "status": constants.TASK_QUEUE,
+            "type": 10
+        }
+        db_api.create_task_info(task_data)
+
         if 0 == status:
-            task_uuid = create_uuid()
             task_value = {
                 "uuid": task_uuid,
                 "name": params["name"],
@@ -519,7 +579,7 @@ class CrontabController(object):
                     logger.error("add instance crontab error, uuid: %s not exist", instance['uuid'])
                     return get_error_result("InstanceNotExist", name=instance['name'])
         logger.info("start add instance crontab task")
-        task_uuid = create_uuid()
+        # task_uuid = create_uuid()
         task_value = {
             "uuid": task_uuid,
             "name": params["name"],
@@ -535,7 +595,8 @@ class CrontabController(object):
             job_id = create_uuid()
             _kwargs = {
                 "cmd": cron_dict["cmd"],
-                "data": _data
+                "data": _data,
+                "task_uuid": task_uuid
             }
             try:
                 trigger = CronTrigger(**job_kwargs)
@@ -595,8 +656,17 @@ class CrontabController(object):
         cmd = params.get("cmd", "")
         cron_list = params.get("cron", [])
         status = params.get("status", 1)
+        task_uuid = create_uuid()
+        # 添加任务信息数据记录
+        task_data = {
+            "uuid": create_uuid(),
+            "task_uuid": task_uuid,
+            "name": constants.NAME_TYPE_MAP[11],
+            "status": constants.TASK_QUEUE,
+            "type": 11
+        }
+        db_api.create_task_info(task_data)
         if 0 == status:
-            task_uuid = create_uuid()
             value = {
                 "uuid": task_uuid,
                 "name": params["name"],
@@ -619,7 +689,7 @@ class CrontabController(object):
                 return get_error_result("NodeNotExistMsg", hostname=item['name'])
 
         logger.info("start add node crontab task")
-        task_uuid = create_uuid()
+        # task_uuid = create_uuid()
         # 添加到数据库
         task_value = {
             "uuid": task_uuid,
@@ -637,7 +707,8 @@ class CrontabController(object):
             job_id = create_uuid()
             _kwargs = {
                 "cmd": cmd,
-                "data": _data
+                "data": _data,
+                "task_uuid": task_uuid
             }
             try:
                 trigger = CronTrigger(**job_kwargs)
@@ -670,9 +741,20 @@ class CrontabController(object):
         cmd = data.get("cmd", '')
         status = data.get("status", 1)
         cron_list = data.get("cron", [])
+        task_uuid = create_uuid()
+        # 添加任务信息数据记录
+        task_data = {
+            "uuid": create_uuid(),
+            "task_uuid": task_uuid,
+            "name": constants.NAME_TYPE_MAP[12],
+            "status": constants.TASK_QUEUE,
+            "type": 12
+        }
+        db_api.create_task_info(task_data)
+
         if status == 0:
             task_data = {
-                "uuid": create_uuid(),
+                "uuid": task_uuid(),
                 "name": data["name"],
                 "desc": data["desc"],
                 "status": status,
@@ -689,7 +771,7 @@ class CrontabController(object):
                 return get_error_result("AddTerminalCrontabError")
 
         logger.info("start add terminal crontab task")
-        task_uuid = create_uuid()
+        # task_uuid = create_uuid()
         task_data = {
             "uuid": task_uuid,
             "name": data['name'],
@@ -706,7 +788,8 @@ class CrontabController(object):
             job_id = create_uuid()
             _kwargs = {
                 "cmd": cmd,
-                "data": _data
+                "data": _data,
+                "task_uuid": task_uuid
             }
             try:
                 trigger = CronTrigger(**job_kwargs)
@@ -859,7 +942,8 @@ class CrontabController(object):
                         find = True
                         _kwargs = {
                             "cmd": cron_dict['cmd'],
-                            "data": _data
+                            "data": _data,
+                            "task_uuid": data["uuid"]
                         }
                         # 只有启动情况下才替换实际任务
                         if update_value['status'] != 0:
@@ -896,7 +980,8 @@ class CrontabController(object):
                         continue
                     _kwargs = {
                         "cmd": cron_dict['cmd'],
-                        "data": _data
+                        "data": _data,
+                        "task_uuid": data["uuid"]
                     }
                     detail_uuid = create_uuid()
                     if 1 == task.type:
@@ -952,56 +1037,276 @@ class CrontabController(object):
         return get_error_result("Success")
 
 
+    def rollback_course_schedule_crontab(self, task_uuid, job_uuid):
+        try:
+            YzyAPScheduler().remove_job(job_uuid)
+        except Exception:
+            pass
+
+        task_obj = db_api.get_crontab_first({"uuid": task_uuid})
+        if task_obj:
+            task_obj.soft_delete()
+
+        detail_obj = db_api.get_crontab_detail_first({"uuid": job_uuid})
+        if detail_obj:
+            detail_obj.soft_delete()
+
+        logger.info("rollback task_uuid[%s], job_uuid[%s] success" % (task_uuid, job_uuid))
+
+
+    def course_schedule_crontab_func(self, term_uuid, crontab_time_list, weeks_num_map, job_uuid):
+        """ 课表定时任务 """
+        if not db_api.get_crontab_detail_first({"uuid": job_uuid}):
+            logger.info("no job_uuid[%s] in yzy_crontab_detail, return" % job_uuid)
+            return
+
+        logger.info("course_schedule crontab exec job_uuid[%s]: start" % job_uuid)
+
+        try:
+            now = datetime.datetime.today()
+            # 找出今天所在周的所有教学分组的启用课表
+            for k, v in weeks_num_map.items():
+                week_start_obj = datetime.datetime.strptime(v[0], "%Y/%m/%d")
+                week_end_obj = datetime.datetime.strptime(v[1], "%Y/%m/%d")
+                if week_start_obj <= now <= week_end_obj:
+                    cs_obj_list = db_api.get_course_schedule_with_all({
+                        "term_uuid": term_uuid,
+                        "week_num": int(k),
+                        "status": constants.COURSE_SCHEDULE_ENABLED
+                    })
+
+                    if cs_obj_list:
+                        logger.info("this week course_schedule count: %d" % len(cs_obj_list))
+                    else:
+                        logger.info("this week course_schedule count: 0")
+
+                    for cs_obj in cs_obj_list:
+                        logger.info("this week course_schedule_uuid[%s], group_uuid[%s]" % (cs_obj.uuid, cs_obj.group_uuid))
+                        # 查找该教学分组课表下今天本节是否有课
+                        for _d in crontab_time_list:
+                            if now.hour == _d["hour"] and now.minute == _d["minute"]:
+                                course_obj = db_api.get_course_with_first({
+                                    "course_template_uuid": cs_obj.course_template_uuid,
+                                    "weekday": now.isoweekday(),
+                                    "course_num": int(_d["course_num"])
+                                })
+                                logger.info("this course_num[%s], cmd_dict: %s, course: %s" % (str(_d["course_num"]), _d, course_obj))
+                                # 如果今天本节有课，根据当前是上课时间（active），还是下课时间（inactive），执行对应操作
+                                if course_obj:
+                                    if _d["cmd"] == "active":
+                                        try:
+                                            DesktopController().active_desktop(course_obj.desktop_uuid)
+                                            DesktopController().start_desktop(course_obj.desktop_uuid)
+                                            logger.info("active course_schedule success: uuid[%s] term_uuid[%s] group_uuid[%s] "
+                                                        "course_template_uuid[%s] week_num[%s] weekday[%s] course_num[%s]" %
+                                                        (cs_obj.uuid, cs_obj.term_uuid, cs_obj.group_uuid, cs_obj.course_template_uuid,
+                                                         cs_obj.week_num, course_obj.weekday, course_obj.course_num))
+                                        except Exception as e:
+                                            logger.error("active course_schedule failed: uuid[%s] term_uuid[%s] group_uuid[%s] "
+                                                        "course_template_uuid[%s] week_num[%s] weekday[%s] course_num[%s]: %s" %
+                                                        (cs_obj.uuid, cs_obj.term_uuid, cs_obj.group_uuid, cs_obj.course_template_uuid,
+                                                         cs_obj.week_num, course_obj.weekday, course_obj.course_num, str(e)))
+
+                                    elif _d["cmd"] == "inactive":
+                                        try:
+                                            DesktopController().inactive_desktop(course_obj.desktop_uuid)
+                                            logger.info("inactive course_schedule success: uuid[%s] term_uuid[%s] group_uuid[%s] "
+                                                        "course_template_uuid[%s] week_num[%s] weekday[%s] course_num[%s]" %
+                                                        (cs_obj.uuid, cs_obj.term_uuid, cs_obj.group_uuid, cs_obj.course_template_uuid,
+                                                         cs_obj.week_num, course_obj.weekday, course_obj.course_num))
+                                        except Exception as e:
+                                            logger.error("inactive course_schedule failed: uuid[%s] term_uuid[%s] group_uuid[%s] "
+                                                        "course_template_uuid[%s] week_num[%s] weekday[%s] course_num[%s]: %s" %
+                                                        (cs_obj.uuid, cs_obj.term_uuid, cs_obj.group_uuid, cs_obj.course_template_uuid,
+                                                         cs_obj.week_num, course_obj.weekday, course_obj.course_num, str(e)))
+                                    else:
+                                        logger.error("invalid cmd:%s", _d["cmd"])
+
+            logger.info("exec course_schedule crontab task job_uuid[%s] success" % job_uuid)
+        except Exception as e:
+            logger.error("exec course_schedule crontab task job_uuid[%s] failed: %s" % (job_uuid, str(e)))
+        return
+
+    def check_course_schedule_crontab(self, cron_dict):
+        pass
+
+    def add_course_schedule_crontab(self, params):
+        """
+        课表定时任务
+        {
+            "name": "course_schedule_cron",
+            "desc": "2020年下学期定时任务",
+            "start_date": "2020-09-01",
+            "end_date": "2020-09-06",
+            "cron": [
+                {
+                    "hour": 8,
+                    "minute": 0,
+                    "cmd": "active"
+                },
+                {
+                    "hour": 8,
+                    "minute": 45,
+                    "cmd": "inactive"
+                },
+                ...
+            ],
+            "status": 1,
+            "term_uuid": "",
+            "weeks_num_map": {
+                "1": ["2020/08/31, "2020/09/06"],
+                "2": ["2020/09/07, "2020/09/13"],
+                 ...
+            }
+        }
+        """
+        logger.info("start add course_schedule crontab task %s" % params)
+        task_uuid = create_uuid()
+        job_uuid = create_uuid()
+        try:
+            task_value = {
+                "uuid": task_uuid,
+                "name": params.pop("name"),
+                "desc": params.pop("desc"),
+                "type": CRONTAB_COURSE_SCHEDULE,
+                "status": params.pop("status")
+            }
+
+            cron_trigger_list = list()
+            for cron_dict in params["cron"]:
+                cron_trigger_list.append(CronTrigger(
+                    start_date=params["start_date"],
+                    end_date=params["end_date"],
+                    hour=cron_dict["hour"],
+                    minute=cron_dict["minute"]
+                ))
+            trigger = OrTrigger(cron_trigger_list)
+            _kwargs = {
+                "term_uuid": params.pop("term_uuid"),
+                "crontab_time_list": params["cron"],
+                "weeks_num_map": params.pop("weeks_num_map"),
+                "job_uuid": job_uuid
+            }
+            YzyAPScheduler().add_job(jobid=job_uuid, trigger=trigger, func=self.course_schedule_crontab_func, kwargs=_kwargs)
+
+            detail_value = {
+                "uuid": job_uuid,
+                "task_uuid": task_uuid,
+                "hour": 0,
+                "minute": 0,
+                "cycle": "course",
+                "values": json.dumps(params),
+                "func": "course_schedule_crontab_func",
+                "params": json.dumps(_kwargs)
+            }
+
+            db_api.create_crontab_task(task_value)
+            db_api.create_crontab_detail(detail_value)
+            logger.info("add course_schedule crontab task success: %s", task_value)
+        except Exception as e:
+            logger.exception("add course_schedule crontab task error: %s", str(e), exc_info=True)
+            self.rollback_course_schedule_crontab(task_uuid, job_uuid)
+            return False
+
+        return task_uuid
+
+    def remove_course_crontab_job(self, task_uuid):
+        try:
+            task_obj = db_api.get_crontab_first({"uuid": task_uuid})
+            if task_obj:
+                detail_obj_list = db_api.get_crontab_detail_all({"task_uuid": task_uuid})
+                for detail_obj in detail_obj_list:
+                    YzyAPScheduler().remove_job(detail_obj.uuid)
+                    detail_obj.soft_delete()
+                task_obj.soft_delete()
+            logger.info("remove course crontab task[%s] success" % task_uuid)
+            return True
+        except Exception as e:
+            logger.exception("remove course crontab task[%s] failed: %s" % (task_uuid, str(e)), exc_info=True)
+            return False
+
+
+
 class LicenseManager(object):
 
     def get_auth_info(self):
-        config = configparser.ConfigParser()
-        config.read(constants.CONFIG_PATH)
-        if "license" in config.sections():
-            sn = config.get('license', 'sn', fallback=None)
-            org_name = config.get('license', 'org_name', fallback=None)
-        else:
-            sn = None
-            org_name = None
+        # config = configparser.ConfigParser()
+        # config.read(constants.CONFIG_PATH)
+        # if "license" in config.sections():
+        #     sn = config.get('license', 'sn', fallback=None)
+        #     org_name = config.get('license', 'org_name', fallback=None)
+        # else:
+        #     sn = None
+        #     org_name = None
+
+        # auth = db_api.get_item_with_first(models.YzyAuth, {})
+        # if auth:
+        #     sn = auth.sn
+        #     org_name = auth.organization
+        # else:
+        #     sn = None
+        #     org_name = None
+        # try:
+        #     registry_info = Registry_Info()
+        #     if sn and org_name:
+        #         sn = sn.replace('-', '')
+        #         sn_array = bytearray(16)
+        #         for index in range(int(len(sn) / 2)):
+        #             sn_char = sn[index * 2:index * 2 + 2]
+        #             sn_array[index] = int(sn_char, 16)
+        #         unitname_array = bytearray(org_name, encoding='utf_16_le')
+        #         unitname_array.extend(bytearray(256 - len(unitname_array)))
+        #         registry_info = Registry_Info(sn_array, unitname_array)
+        #
+        #     transport = TSocket.TSocket('localhost', 9000)
+        #     transport = TTransport.TBufferedTransport(transport)
+        #     protocol = TBinaryProtocol.TBinaryProtocol(transport)
+        #     protocol = TMultiplexedProtocol.TMultiplexedProtocol(protocol, "UKeyService")
+        #     client = UKeyServer.Client(protocol)
+        #     transport.open()
+        #
+        #     auth_info = client.GetAuthorInfo(registry_info)
+        #     expire_time = auth_info.ExpireDays
+        #     try:
+        #         vdi_size = auth_info.VDITotalSize
+        #         voi_size = auth_info.VOITotalSize
+        #     except:
+        #         vdi_size = 1
+        #         voi_size = 1
+        #     transport.close()
+        #     logger.info("use_type:%s, expire_time:%s, vdi_size:%s, voi_size:%s, delay_days:%s",
+        #                 auth_info.useType, expire_time, vdi_size, voi_size, auth_info.DelayDays)
+        #     return {
+        #         "auth_type": auth_info.useType,
+        #         "expire_time": expire_time,
+        #         "delay_days": auth_info.DelayDays,
+        #         "vdi_size": vdi_size,
+        #         "voi_size": voi_size
+        #     }
+        # except Exception as e:
+        #     logger.exception("get auth info failed:%s", e)
+        #     return {
+        #         "auth_type": 0
+        #     }
+
         try:
-            registry_info = Registry_Info()
-            if sn and org_name:
-                sn = sn.replace('-', '')
-                sn_array = bytearray(16)
-                for index in range(int(len(sn) / 2)):
-                    sn_char = sn[index * 2:index * 2 + 2]
-                    sn_array[index] = int(sn_char, 16)
-                unitname_array = bytearray(org_name, encoding='utf_16_le')
-                unitname_array.extend(bytearray(256 - len(unitname_array)))
-                registry_info = Registry_Info(sn_array, unitname_array)
-
-            transport = TSocket.TSocket('localhost', 9000)
-            transport = TTransport.TBufferedTransport(transport)
-            protocol = TBinaryProtocol.TBinaryProtocol(transport)
-            protocol = TMultiplexedProtocol.TMultiplexedProtocol(protocol, "UKeyService")
-            client = UKeyServer.Client(protocol)
-            transport.open()
-
-            auth_info = client.GetAuthorInfo(registry_info)
-            expire_time = auth_info.ExpireDays
-            try:
-                vdi_size = auth_info.VDITotalSize
-                voi_size = auth_info.VOITotalSize
-            except:
-                vdi_size = 1
-                voi_size = 1
-            transport.close()
-            logger.info("use_type:%s, expire_time:%s, vdi_size:%s, voi_size:%s, delay_days:%s",
-                        auth_info.useType, expire_time, vdi_size, voi_size, auth_info.DelayDays)
+            client = UkeyClient()
+            auth_info = client.get_auth_info()
+            logger.info("auth_info: %s, %s", type(auth_info), auth_info)
             return {
-                "auth_type": auth_info.useType,
-                "expire_time": expire_time,
-                "delay_days": auth_info.DelayDays,
-                "vdi_size": vdi_size,
-                "voi_size": voi_size
+                "auth_type": auth_info["use_type"],
+                "expire_time": auth_info["expire_day"],
+                "vdi_size": auth_info["vdi_num"],
+                "voi_size": auth_info["voi_num"]
             }
         except Exception as e:
-            logger.exception("get auth info failed:%s", e)
+            logger.exception("get auth info failed: %s", str(e))
+            return {
+                "auth_type": 0,
+                "expire_time": 0,
+                "vdi_size": 0,
+                "voi_size": 0
+            }
 
 
 class LogSetupManager(object):
@@ -1046,3 +1351,23 @@ class LogSetupManager(object):
         except Exception as e:
             logger.error("update warn setup record fail:%s", e)
             return get_error_result("UpdateWarnSetupFailError")
+
+
+class StrategyManager(object):
+
+    def set_system_time(self, data):
+        date = data.get("date")
+        node_ip = data.get("node_ip")
+        time_zone = data.get("time_zone")
+        ntp_server = data.get("ntp_server")
+        request_data = {
+            "command": "set_node_datetime",
+            "handler": "NodeHandler",
+            "data": {
+                "datetime": date,
+                "time_zone": time_zone,
+                "ntp_server": ntp_server
+            }
+        }
+        logger.debug("set node system time, data:%s", data)
+        return compute_post(node_ip, request_data)

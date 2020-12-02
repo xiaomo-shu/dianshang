@@ -10,7 +10,7 @@ from django.db.models import Q
 from web_manage.yzy_resource_mgr.models import *
 from web_manage.yzy_edu_desktop_mgr.models import *
 from web_manage.yzy_user_desktop_mgr.models import *
-from web_manage.common.http import server_post, monitor_post
+from web_manage.common.http import server_post, monitor_post, subprocess_server_post
 from web_manage.common.log import operation_record, insert_operation_log
 from web_manage.common.utils import get_error_result, JSONResponse, is_ip_addr, is_netmask
 from web_manage.common import constants
@@ -196,7 +196,7 @@ class NodeManager(object):
             }
             ret = server_post("/node/update", request_data)
         else:
-            ret = server_post("/node/add", data)
+            ret = server_post("/node/add", data, timeout=1800)
             if ret.get('code') != 0:
                 logger.info("add node KVM failed:%s", ret['msg'])
                 return ret
@@ -240,6 +240,18 @@ class NodeManager(object):
         删除节点
         :return:
         """
+        # 已做HA的主备控节点，在资源池中，不允许删除
+        ha_node_uuids = list()
+        ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+        if ha_info_objs:
+            for ha_info_obj in ha_info_objs:
+                ha_node_uuids.append(ha_info_obj.master_uuid)
+                ha_node_uuids.append(ha_info_obj.backup_uuid)
+
+        for uuid in uuids:
+            if uuid in ha_node_uuids:
+                return get_error_result("DeleteHaNodeError")
+
         all_task = list()
         failed_num = 0
         success_num = 0
@@ -294,6 +306,12 @@ class NodeManager(object):
         ret['data'] = {'msg': msg}
         return ret
 
+    def ping_ip(self, ip):
+        if not is_ip_addr(ip):
+            return get_error_result("IpAddressGatewayDnsAddressError")
+        ret = server_post("/node/ping_ip", {'ip': ip})
+        return ret
+
     @operation_record("重启主控节点 name:{node[name]}")
     def reboot_controller_node(self, node):
         uuid = node.get("uuid")
@@ -311,7 +329,6 @@ class NodeManager(object):
         ret = server_post("/node/reboot", {"uuid": uuid})
         return ret
 
-    @operation_record("关闭主控节点 name:{node[name]}")
     def shutdown_controller_node(self, node, compute_node=False):
         uuid = node.get("uuid")
         obj = self.get_object_by_uuid(YzyNodes, uuid)
@@ -321,7 +338,7 @@ class NodeManager(object):
         request_data = {
             'timeout': constants.SHUTDOWN_TIMEOUT
         }
-        if compute_node:
+        if obj.type in [1, 3] and compute_node:
             nodes = YzyNodes.objects.filter(deleted=False).exclude(status=constants.STATUS_SHUTDOWN).\
                 exclude(status=constants.STATUS_SHUTDOWNING).exclude(type__in=[1, 3])
             all_task = dict()
@@ -344,7 +361,7 @@ class NodeManager(object):
         ret = server_post("/node/shutdown", request_data)
         if ret.get("code") != 0:
             return get_error_result("ComputeNodeShutdownError", node.name)
-        msg = "关闭主控节点 %s" % node.get("name")
+        msg = "关闭主控节点 %s" % obj.name
         insert_operation_log(msg, ret['msg'])
         return get_error_result("Success")
 
@@ -386,6 +403,215 @@ class NodeManager(object):
                 node_failed_num = node_failed_num + 1
         msg = "重启计算节点 %s" % ('/'.join(names))
         insert_operation_log(msg, ret['msg'])
+        return ret
+
+    @operation_record("启用HA")
+    def enable_ha(self, master_uuid, backup_uuid, new_master_ip, sensitivity, quorum_ip, backup_pwd):
+        """
+        data: {
+            "new_master_ip": "172.16.1.199",
+            "sensitivity": 60,
+            "quorum_ip": "172.16.1.254",
+            "master_ip": "172.16.1.66",
+            "backup_ip": "172.16.1.88",
+            "master_nic": "eth0",
+            "backup_nic": "eth0",
+            "master_uuid": "194279f3-31db-4ce0-9e46-39ffbf257f64",
+            "backup_uuid": "5507fd59-8d3a-4ea0-b8fe-85cd52c173e9",
+            "backup_pwd": "123qwe,."
+        }
+        """
+        master_node_obj = self.get_object_by_uuid(YzyNodes, master_uuid)
+        if not master_node_obj:
+            logger.error("enable_ha fail node not exist:%s", master_uuid)
+            return get_error_result("NodeNotExist")
+
+        backup_node_obj = self.get_object_by_uuid(YzyNodes, backup_uuid)
+        if not backup_node_obj:
+            logger.error("enable_ha fail node not exist:%s", backup_uuid)
+            return get_error_result("NodeNotExist")
+
+        # 主控和备控必须都在线，才能启用HA
+        if master_node_obj.status != 'active' or backup_node_obj.status != 'active':
+            return get_error_result("NodesNotAllActiveError")
+
+        # 查询master_ip/backup_ip, master_nic/backup_nic, netmask
+        # 默认使用管理网络
+        vip = master_node_obj.ip
+        backup_ip = backup_node_obj.ip
+        master_ip_obj = self.get_object_by_ip(YzyInterfaceIp, vip)
+        # master_ip_obj = YzyInterfaceIp.objects.filter(master_ip, deleted=False).first()
+        if not master_ip_obj:
+            return get_error_result("IPNotExist", ip=vip)
+        backup_ip_obj = self.get_object_by_ip(YzyInterfaceIp, backup_ip)
+        # backup_ip_obj = YzyInterfaceIp.objects.filter(backup_ip, deleted=False).first()
+        if not backup_ip_obj:
+            return get_error_result("IPNotExist", ip=backup_ip)
+        netmask = master_ip_obj.netmask
+        master_nic = master_ip_obj.name
+        backup_nic = backup_ip_obj.name
+        master_nic_uuid = master_ip_obj.interface.uuid
+        backup_nic_uuid = backup_ip_obj.interface.uuid
+
+        # 校验网卡上是否有FLAT交换机
+        master_nic_uplinks = master_ip_obj.interface.yzy_network_interface_uplinks.all()
+        if master_nic_uplinks:
+            for uplink in master_nic_uplinks:
+                if uplink.virtual_switch.type == 'Flat':
+                    return get_error_result("HaNicFlatVSUplinkError")
+        backup_nic_uplinks = backup_ip_obj.interface.yzy_network_interface_uplinks.all()
+        if backup_nic_uplinks:
+            for uplink in backup_nic_uplinks:
+                if uplink.virtual_switch.type == 'Flat':
+                    return get_error_result("HaNicFlatVSUplinkError")
+
+        # 校验vip格式，与master_ip同网段
+        new_master_ip_ret = self._verify_new_master_ip(new_master_ip, vip, netmask)
+        if new_master_ip_ret:
+            return new_master_ip_ret
+
+        # 校验仲裁IP格式，能否ping通
+        # 在server层不进行校验
+        # if not is_ip_addr(quorum_ip):
+        #     return get_error_result("IpAddressGatewayDnsAddressError")
+        ping_ret = self.ping_ip(quorum_ip)
+        if ping_ret.get("code", -1) != 0:
+            return ping_ret
+
+        if sensitivity < 60:
+            return get_error_result("SensitivityLessThan60Error")
+
+        # 校验backup_pwd
+        _data = {
+            "ip": backup_ip,
+            "root_pwd": backup_pwd
+        }
+        ret = server_post("/node/check_password", _data)
+        if ret.get('code') != 0:
+            logger.info("check backup_pwd in compute node %s failed: %s", (backup_ip, ret['msg']))
+            return get_error_result("HaNodePasswordError")
+
+        # 请求server服务变更主控IP所需信息
+        update_ip_data = {
+            "uuid": master_ip_obj.uuid,
+            "nic_uuid": master_nic_uuid,
+            "nic_name": master_nic,
+            "node_ip": "127.0.0.1",
+            "ip": new_master_ip,
+            "netmask": master_ip_obj.netmask,
+            "ha_flag": True
+        }
+        # ret = server_post('/node/update_ip', data)
+        # logger.info("ret：%s", ret)
+
+        # 当配置HA失败回滚时，变更主控IP所需信息
+        post_data = {
+            "uuid": master_ip_obj.uuid,
+            "nic_uuid": master_nic_uuid,
+            "nic_name": master_nic,
+            "node_ip": "127.0.0.1",
+            "ip": vip,
+            "netmask": master_ip_obj.netmask,
+            "ha_flag": True
+        }
+
+        # 请求sever服务启用HA所需信息
+        enable_ha_data = {
+            "vip": vip,
+            "netmask": netmask,
+            "sensitivity": sensitivity,
+            "quorum_ip": quorum_ip,
+            "master_ip": new_master_ip,
+            "backup_ip": backup_ip,
+            "master_nic": master_nic,
+            "backup_nic": backup_nic,
+            "master_nic_uuid": master_nic_uuid,
+            "backup_nic_uuid": backup_nic_uuid,
+            "master_uuid": master_uuid,
+            "backup_uuid": backup_uuid,
+            "post_data": post_data
+        }
+        # ret = server_post("/controller/enable_ha", request_data)
+
+        url = "/controller/enable_ha"
+        request_data = {
+            "update_ip_data": update_ip_data,
+            "enable_ha_data": enable_ha_data
+        }
+        logger.info("url: %s, request_data: %s" % (url, request_data))
+        # 异步调用server层接口，不等结果，直接返回
+        subprocess_server_post(url, request_data)
+        return ret
+
+    @operation_record("禁用HA")
+    def disable_ha(self, ha_info_uuid):
+        """
+        {
+            "ha_info_uuid": "82d56980-7b6d-4086-a9b9-814a2c045f62"
+        }
+        """
+        ha_info_obj = self.get_object_by_uuid(YzyHaInfo, ha_info_uuid)
+        if not ha_info_obj:
+            logger.error("disable_ha fail ha_info not exist:%s", ha_info_obj)
+            return get_error_result("HAInfoNotExist")
+
+        # 必须两节点都在线，且运行状态正常（server层有校验），才允许禁用HA
+        master_node = self.get_object_by_uuid(YzyNodes, ha_info_obj.master_uuid)
+        backup_node = self.get_object_by_uuid(YzyNodes, ha_info_obj.backup_uuid)
+        if not master_node or not backup_node or master_node.status != 'active' or backup_node.status != 'active':
+            return get_error_result("NodesNotReadyError")
+
+        request_data = {
+            "ha_info_uuid": ha_info_uuid
+        }
+        ret = server_post("/controller/disable_ha", request_data)
+        return ret
+
+    @operation_record("HA主备控切换 新主控IP：{new_vip_host_ip}")
+    def switch_ha_master(self, ha_info_uuid, new_vip_host_ip):
+        """
+        {
+            "ha_info_uuid": "82d56980-7b6d-4086-a9b9-814a2c045f62",
+            "new_vip_host_ip": "172.16.1.88",
+        }
+        """
+        ha_info_obj = self.get_object_by_uuid(YzyHaInfo, ha_info_uuid)
+        if not ha_info_obj:
+            logger.error("switch_ha_master fail ha_info not exist:%s", ha_info_obj)
+            return get_error_result("HAInfoNotExist")
+
+        if new_vip_host_ip not in [ha_info_obj.master_ip, ha_info_obj.backup_ip]:
+            return get_error_result("NotHAInfoIPError")
+
+        # 必须两节点都在线，且运行状态正常（server层有校验），才允许切换主备
+        master_node = self.get_object_by_uuid(YzyNodes, ha_info_obj.master_uuid)
+        backup_node = self.get_object_by_uuid(YzyNodes, ha_info_obj.backup_uuid)
+        if not master_node or not backup_node or master_node.status != 'active' or backup_node.status != 'active':
+            return get_error_result("NodesNotReadyError")
+
+        request_data = {
+            "new_vip_host_ip": new_vip_host_ip,
+            "vip": ha_info_obj.vip
+        }
+        ret = server_post("/controller/switch_ha_master", request_data)
+        return ret
+
+    def ha_status(self, ha_info_uuid):
+        """
+        {
+            "ha_info_uuid": "82d56980-7b6d-4086-a9b9-814a2c045f62"
+        }
+        """
+        ha_info_obj = self.get_object_by_uuid(YzyHaInfo, ha_info_uuid)
+        if not ha_info_obj:
+            logger.error("ha_status failed ha_info not exist:%s", ha_info_obj)
+            # return get_error_result("HAInfoNotExist")
+            return get_error_result()
+
+        request_data = {
+            "ha_info_uuid": ha_info_uuid
+        }
+        ret = server_post("/controller/ha_status", request_data)
         return ret
 
     def shutdown_node(self, nodes):
@@ -514,9 +740,20 @@ class NodeManager(object):
             nic_obj = self.get_object_by_uuid(YzyNodeNetworkInfo, uuid=nic_uuid)
         except Exception as e:
             logger.exception(e)
-            return JSONResponse(get_error_result("OtherError"))
+            return get_error_result("OtherError")
         ip = data.get('ip', '')
         netmask = data.get('netmask', '')
+
+        # 已启用HA的网卡不能添加附属IP
+        ha_nic_uuids = list()
+        ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+        if ha_info_objs:
+            for ha_info_obj in ha_info_objs:
+                ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+        if nic_obj.uuid in ha_nic_uuids:
+            return get_error_result("HaNicAddIPError")
+
         # 查看该IP是否已被使用
         yzy_interfaces = YzyInterfaceIp.objects.filter(deleted=False, ip=ip).all()
         if len(yzy_interfaces) >= 1:
@@ -589,6 +826,17 @@ class NodeManager(object):
         data = {}
         ip_info = self.get_object_by_uuid(YzyInterfaceIp, uuid=ip_info_uuid)
         node = self.get_object_by_uuid(YzyNodes, uuid=node_uuid)
+
+        # 已启用HA的网卡不能添加删除IP
+        ha_nic_uuids = list()
+        ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+        if ha_info_objs:
+            for ha_info_obj in ha_info_objs:
+                ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+        if nic_uuid in ha_nic_uuids:
+            return get_error_result("HaNicDeleteIPError")
+
         data["nic_name"] = ip_info.name
         data["uuid"] = ip_info_uuid
         data['nic_uuid'] = nic_uuid
@@ -601,6 +849,17 @@ class NodeManager(object):
         # 请求server端,进行IP更新
         ip_info = self.get_object_by_uuid(YzyInterfaceIp, uuid=ip_info_uuid)
         node = self.get_object_by_uuid(YzyNodes, uuid=node_uuid)
+
+        # 已启用HA的网卡不能编辑IP
+        ha_nic_uuids = list()
+        ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+        if ha_info_objs:
+            for ha_info_obj in ha_info_objs:
+                ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+        if nic_uuid in ha_nic_uuids:
+            return get_error_result("HaNicEditIPError")
+
         data["nic_name"] = ip_info.name
         data["uuid"] = ip_info_uuid
         data['nic_uuid'] = nic_uuid
@@ -653,12 +912,24 @@ class NodeManager(object):
             if len(slaves) < 2:
                 return get_error_result("SlaveLessThanTwoError")
 
+            # HA心跳网卡
+            ha_nic_uuids = list()
+            ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+
             for slave_nic_uuid in slaves:
                 # 校验slave网卡是否存在
                 slave = node.yzy_node_interfaces.filter(uuid=slave_nic_uuid).first()
                 if not slave:
                     logger.error("slave nic[%s] not exist!" % slave_nic_uuid)
                     return get_error_result("SlaveNICNotExist")
+
+                # 已启用HA的网卡不能作为bond的slave
+                if slave_nic_uuid in ha_nic_uuids:
+                    return get_error_result("HaNicBondError")
 
                 # 校验slave网卡是否已经做过bond了
                 already_slave = YzyBondNics.objects.filter(deleted=False, slave_uuid=slave_nic_uuid).first()
@@ -795,6 +1066,18 @@ class NodeManager(object):
             if not bond_nic:
                 logger.error("bond nic[%s] not exist!" % bond_nic)
                 return get_error_result("BondNICNotExist")
+
+            # HA心跳网卡
+            ha_nic_uuids = list()
+            ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+            # 已作为HA心跳网卡的Bond不能编辑或删除
+            if bond_uuid in ha_nic_uuids:
+                return get_error_result("HaBondEditDeleteError")
+
             _data["bond_uuid"] = bond_uuid
 
             # 校验slave网卡数量，至少两张才能做bond
@@ -808,6 +1091,10 @@ class NodeManager(object):
                 if not slave:
                     logger.error("slave nic[%s] not exist!" % slave_nic_uuid)
                     return get_error_result("SlaveNICNotExist")
+
+                # 已启用HA的网卡不能作为bond的slave
+                if slave_nic_uuid in ha_nic_uuids:
+                    return get_error_result("HaNicBondError")
 
                 if slave.status != 2:
                     inactive_count += 1
@@ -953,6 +1240,18 @@ class NodeManager(object):
             if not bond_nic:
                 logger.error("bond nic[%s] not exist!" % bond_nic)
                 return get_error_result("BondNICNotExist")
+
+            # HA心跳网卡
+            ha_nic_uuids = list()
+            ha_info_objs = YzyHaInfo.objects.filter(deleted=False).all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+            # 已作为HA心跳网卡的Bond不能编辑或删除
+            if bond_uuid in ha_nic_uuids:
+                return get_error_result("HaBondEditDeleteError")
+
             _data["bond_name"] = bond_nic.nic
             _data["bond_uuid"] = bond_uuid
 
@@ -1125,6 +1424,23 @@ class NodeManager(object):
                 count += 1
         if count > 0 and count == len(ip_list):
             return get_error_result("GatewayAndIpError")
+        return None
+
+    def _verify_new_master_ip(self, new_master_ip, vip, netmask):
+        if new_master_ip and not is_ip_addr(new_master_ip):
+            return get_error_result("IpAddressGatewayDnsAddressError")
+
+        # 查看该IP是否已被使用
+        yzy_interfaces = YzyInterfaceIp.objects.filter(deleted=False, ip=new_master_ip).all()
+        if len(yzy_interfaces) >= 1:
+            logger.error("add ip node fail: ipaddress exists")
+            return get_error_result("IPInUse")
+
+        # vip必须与master_ip/backup_ip在同一网段
+        netmask_bits = netaddr.IPAddress(netmask).netmask_bits()
+        network_num = ipaddress.ip_interface(vip + "/" + str(netmask_bits)).network
+        if ipaddress.IPv4Address(new_master_ip) not in network_num:
+            return get_error_result("VIPAndMasterIpError")
         return None
 
 

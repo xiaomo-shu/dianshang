@@ -60,6 +60,20 @@ class ResourcePoolAPI(MethodView):
                 result = self.pool.update_resource_pool(data)
                 if result:
                     return result
+            elif action == "storages":
+                """
+                {   
+                    "resource_pool_uuid": 4cd7b0d0-3e5f-471c-b461-a7508ac99373,
+                    "storages": {
+                            "/opt/fast": "1,2"
+                            "/opt/slow": "3,4"
+                        }
+                }
+                """
+                resource_pool_uuid = data.get('resource_pool_uuid')
+                result = self.pool.update_storages(resource_pool_uuid, data['storages'])
+                if result:
+                    return result
             elif action == "node":
                 # get node with resource pool
                 pool_uuid = data.get("uuid", "")
@@ -69,7 +83,7 @@ class ResourcePoolAPI(MethodView):
 
             return abort_error(404)
         except Exception as e:
-            logger.error("resource pool action %s failed:%s", action, e)
+            logger.exception("resource pool action %s failed:%s", action, e)
             return build_result("OtherError")
 
 
@@ -119,7 +133,7 @@ class ResourcePoolImagesAPI(MethodView):
 
             return abort_error(404)
         except Exception as e:
-            logger.error("resource pool image action %s failed:%s", action, e)
+            logger.exception("resource pool image action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

@@ -42,8 +42,8 @@ class YzyResourcePoolsSerializer(DateTimeFieldMix):
             hosts_state = list()
             # 获取每个基础镜像在所有节点的状态
             for host in instance.yzy_nodes.all():
-                task = YzyTaskInfo.objects.filter(image_id=image.uuid, host_uuid=host.uuid, deleted=0). \
-                    order_by('-progress').order_by('-id').first()
+                task = YzyTaskInfo.objects.filter(image_id=image.uuid, host_uuid=host.uuid, deleted=0).\
+                    order_by('-id').first()
                 if task:
                     if 'error' == task.status:
                         status = 2
@@ -110,7 +110,8 @@ class YzyNodesSerializer(DateTimeFieldMix):
         # bond_nics返回bond与slave之间的关系
         representation['bond_nics'] = YzyBondNicsSerializer(instance.yzy_node_interfaces.filter(type=1).all(), many=True).data
         storages = YzyNodeStorageSerializer(instance.yzy_node_storages, many=True).data
-        storages = [storage for storage in storages if storage['path'] != '/boot/efi']
+        storages = [storage for storage in storages
+                    if storage['path'] != '/boot/efi']
         representation['storages'] = storages
         # linux中系统有预留空间，所以used+free不会等于total
         sys_used = 0
@@ -189,8 +190,8 @@ class YzyBaseImagesSerializer(DateTimeFieldMix):
         state = list()
         hosts = obj.resource_pool.yzy_nodes
         for host in hosts.get_queryset():
-            task = YzyTaskInfo.objects.filter(image_id=obj.uuid, host_uuid=host.uuid, deleted=0). \
-                order_by('-progress').order_by('-id').first()
+            task = YzyTaskInfo.objects.filter(image_id=obj.uuid, host_uuid=host.uuid, deleted=0).\
+                order_by('-id').first()
             if task:
                 if 'error' == task.status:
                     status = 2
@@ -213,7 +214,7 @@ class YzyBaseImagesSerializer(DateTimeFieldMix):
         hosts = obj.resource_pool.yzy_nodes
         for host in hosts.get_queryset():
             task = YzyTaskInfo.objects.filter(image_id=obj.uuid, host_uuid=host.uuid, deleted=0).\
-                order_by('-progress').order_by('-id').first()
+                order_by('-id').first()
             if not task:
                 info = {
                     'host_name': host.name,
@@ -244,7 +245,7 @@ class YzyBaseImagesSerializer(DateTimeFieldMix):
         hosts = obj.resource_pool.yzy_nodes
         for host in hosts.get_queryset():
             task = YzyTaskInfo.objects.filter(image_id=obj.uuid, host_uuid=host.uuid, deleted=0).\
-                order_by('-progress').order_by('-id').first()
+                order_by('-id').first()
             if not task or task.status == 'end':
                 publish_count += 1
         return publish_count
@@ -409,7 +410,7 @@ class YzyISOSerializer(DateTimeFieldMix):
     class Meta:
         model = YzyISO
         # fields = '__all__'
-        fields = ('id', 'name', 'type', 'uuid', 'desc', 'path', 'os_type', 'size',
+        fields = ('id', 'name', 'type', 'uuid', 'desc', 'path', 'os_type', 'size', 'md5_sum',
                   'status', 'deleted', 'deleted_at', 'created_at', 'updated_at', 'cpu_count', 'total_ram')
 
     def get_cpu_count(self, obj):
@@ -440,7 +441,7 @@ class YzyNodeStorageSerializer(DateTimeFieldMix):
         return round(obj.total/1024/1024/1024, 2)
 
     def get_usage(self, obj):
-        usage = "%.2f" % ((obj.total - obj.free) / obj.total * 100)
+        usage = "%.2f" % (obj.used / obj.total * 100)
         return usage
 
 
@@ -479,3 +480,83 @@ class YzyBondNicsSerializer(DateTimeFieldMix):
                   "dns2": i.dns2,  'is_manage': i.is_manage, 'is_image': i.is_image}
             ips.append(_d)
         return ips
+
+
+class YzyHaInfoSerializer(DateTimeFieldMix):
+    ha_data_sync_network = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = YzyHaInfo
+        fields = '__all__'
+
+    def get_ha_data_sync_network(self, instance):
+        return "%s(%s)" % (instance.master_nic, instance.master_ip)
+
+
+class YzyStoragesSerializer(DateTimeFieldMix):
+    storages = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = YzyResourcePools
+        fields = ('uuid', 'name', 'storages')
+
+    def get_storages(self, obj):
+        storages = list()
+        nodes = YzyNodes.objects.filter(resource_pool=obj.uuid, deleted=False)
+        for node in nodes:
+            info = {
+                "node_name": node.name,
+                "node_ip": node.ip,
+                "node_uuid": node.uuid
+            }
+            node_storages = list()
+            for role in [constants.TEMPLATE_SYS, constants.TEMPLATE_DATA,
+                         constants.INSTANCE_SYS, constants.INSTANCE_DATA]:
+                template_sys = YzyNodeStorages.objects.filter(role__contains='%s' % role).\
+                    filter(node=node.uuid, deleted=False).first()
+                node_storages.append({
+                    "type": role,
+                    "node_ip": node.ip,
+                    "storage_type": "local" if template_sys.type == 1 else "nfs",
+                    "path": template_sys.path,
+                    "total": round(template_sys.total/1024/1024/1024, 2),
+                    "free": round(template_sys.free/1024/1024/1024, 2)
+                })
+            info['storages'] = node_storages
+            storages.append(info)
+        return storages
+
+
+class YzyRemoteStorageSerializer(DateTimeFieldMix):
+
+    used = serializers.SerializerMethodField(read_only=True)
+    total = serializers.SerializerMethodField(read_only=True)
+    usage = serializers.SerializerMethodField(read_only=True)
+    available = serializers.SerializerMethodField(read_only=True)
+    type = serializers.SerializerMethodField(read_only=True)
+    resource_pool = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = YzyRemoteStorage
+        fields = ('uuid', 'name', 'server', 'used', 'available', 'total', 'usage', 'type', 'resource_pool')
+
+    def get_available(self, obj):
+        return round(obj.free/1024/1024/1024, 2) if obj.free else None
+
+    def get_used(self, obj):
+        return round(obj.used/1024/1024/1024, 2) if obj.used else None
+
+    def get_total(self, obj):
+        return round(obj.total/1024/1024/1024, 2) if obj.total else None
+
+    def get_usage(self, obj):
+        usage = "%.2f" % (obj.used / obj.total * 100) if obj.used else None
+        return usage
+
+    def get_resource_pool(self, obj):
+        if obj.allocated:
+            return YzyResourcePools.objects.filter(deleted=False, uuid=obj.allocated_to).first().name
+        return None
+
+    def get_type(self, obj):
+        return 'NFS' if obj.type == 0 else 'Others'

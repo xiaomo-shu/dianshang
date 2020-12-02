@@ -4,17 +4,22 @@ import netaddr
 import ipaddress
 import os
 import subprocess
+import json
+import time
 from flask import jsonify, Response
-from common import constants
-from common.utils import check_node_status
+from common import constants, cmdutils
+from common.utils import check_node_status, build_result, compute_post, is_ip_addr, create_uuid, monitor_post, \
+            is_netmask, check_vlan_id, get_error_name, icmp_ping, get_error_result
+from common.config import SERVER_CONF
 from yzy_server.database import apis as db_api
 from yzy_server.database import models
 from yzy_server.monitor.node_monitor import update_node_status
 from .template_ctl import TemplateController
 from .desktop_ctl import InstanceController
-from common.utils import build_result, compute_post, is_ip_addr, create_uuid, monitor_post, \
-            is_netmask, check_vlan_id, get_error_name
 from yzy_server.apis.v1.controllers.desktop_ctl import BaseController
+from yzy_server.monitor.node_monitor import update_service_status
+from yzy_server.extensions import db
+from yzy_server.utils import get_template_images, get_voi_ha_domain_info, ha_sync_file
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +133,7 @@ class NodeController(object):
         node_uuid = create_uuid()
         # 节点网卡和存储信息获取
         data_nic_uuid = None
+        master_netmask = '255.255.255.0'
         try:
             logger.info("get node network info")
             #网卡列表
@@ -157,6 +163,8 @@ class NodeController(object):
                     'status': 2 if nic_info['stat'] else 1
                 }
                 if nic_info.get('ip') and nic_info.get('mask'):
+                    if nic_info['ip'] == data['ip']:
+                        master_netmask = nic_info['mask']
                     nic_ip = {
                         'uuid': create_uuid(),
                         'nic_uuid': nic_uuid,
@@ -174,18 +182,15 @@ class NodeController(object):
             for part in parts:
                 for key, value in data['storages'].items():
                     if key == part['path']:
-                        path = key
                         role = value
                         break
                 else:
-                    path = part['path']
-                    role = '0'
+                    role = ''
                 part_uuid = create_uuid()
                 info = {
                     'uuid': part_uuid,
                     'node_uuid': node_uuid,
-                    'path': path,
-                    # 'mountpoint': part['path'],
+                    'path': part['path'],
                     'role': role,
                     'type': part['type'],
                     'total': part['total'],
@@ -254,14 +259,16 @@ class NodeController(object):
             rep_json = monitor_post(data['ip'], url, None)
             if rep_json["code"] != 0:
                 logger.error("get node:%s hardware info fail" % data['ip'])
-                return
+                return build_result("GetHardwareInfoFailure")
+
             hardware_data = rep_json.get("data", {})
             logger.info('get node:%s hardware info' % str(hardware_data))
 
-            gpu_info = list((str(value)+" * "+key) for key,value in hardware_data["gfxcard"].items())[0]
-            cpu_info_list = list((str(value)+" * "+key) for key,value in hardware_data["cpu"].items())
+            gpu_info = list((str(value)+" * "+key) for key, value in hardware_data["gfxcard"].items())[0]
+            cpu_info_list = list((str(value)+" * "+key) for key, value in hardware_data["cpu"].items())
             cpu_info = ','.join(cpu_info_list)
-            mem_info_list = list((str(value)+" * "+key) for key,value in hardware_data["memory"].items())
+            mem_info_list = list((str(value['count']) + " * " + key + ' ' + str(value['size']))
+                                 for key, value in hardware_data["memory"].items())
             mem_info = ','.join(mem_info_list)
 
             server_version_info = hardware_data["server_version"]
@@ -292,23 +299,16 @@ class NodeController(object):
                 db_api.insert_with_many(models.YzyInterfaceIp, nic_ip_list)
             db_api.insert_with_many(models.YzyNodeStorages, part_list)
 
-            # url = "/api/v1/monitor/task"
-            # m_req = {
-            #     "handler": "TimerHandler",
-            #     "command": "update",
-            #     "data": {
-            #         "node_uuid": node_uuid,
-            #         "addr": "http://%s:50000/api/v1/node/update_info" % (data['ip'])
-            #     }
-            # }
-            # rep_json = monitor_post(data['ip'], url, m_req)
-            # if rep_json['code'] == 0:
-            #     m_req = {
-            #         "handler": "TimerHandler",
-            #         "command": "resume"
-            #     }
-            #     rep_json = monitor_post(data['ip'], url, m_req)
-            logger.info("init network success")
+            ntp_server_command = {
+                "command": "config_ntp_server",
+                "handler": "NodeHandler",
+                "data": {
+                    "ipaddr": data['ip'],
+                    "netmask": master_netmask
+                }
+            }
+            ret = compute_post(data['ip'], ntp_server_command)
+            logger.info("config ntp server:%s", ret)
         except Exception as e:
             logger.error("init controller failed:%s", e, exc_info=True)
             _data = {
@@ -416,10 +416,20 @@ class NodeController(object):
             data['hostname'] = ret["data"]["hostname"]
             controller = db_api.get_controller_node()
             storages = db_api.get_node_storage_all({'node_uuid': controller.uuid})
-            nics = self.get_node_network_interface(data['ip'])
             parts = self.get_node_storage(data['ip'])
+            # 判断主控用作存储的挂载点，在添加的节点上是否存在
+            for storage in storages:
+                if storage['role']:
+                    for part in parts:
+                        if part['path'] == storage['path']:
+                            break
+                    else:
+                        logger.error("the node storages is less of %s", storage['path'])
+                        return build_result("NodeStorageError", node=data['ip'], path=storage['path'])
+
             nic_map = {}
             vswitch_map = {}
+            nics = self.get_node_network_interface(data['ip'])
             for nic_info in nics:
                 nic_uuid = create_uuid()
                 nic_map[nic_info['interface']] = nic_uuid
@@ -447,14 +457,13 @@ class NodeController(object):
                     }
                     nic_ip_list.append(nic_ip)
                 nic_list.append(info)
-            for storage in storages:
-                for part in parts:
-                    if part['path'] == storage['path']:
+            for part in parts:
+                for storage in storages:
+                    if storage['path'] == part['path']:
                         role = storage['role']
                         break
                 else:
-                    logger.error("the node storages is less of %s", storage['path'])
-                    return build_result("NodeStorageError", node=data['ip'], path=storage['path'])
+                    role = ''
                 part_uuid = create_uuid()
                 info = {
                     'uuid': part_uuid,
@@ -488,14 +497,16 @@ class NodeController(object):
             rep_json = monitor_post(data['ip'], url, None)
             if rep_json["code"] != 0:
                 logger.error("get node:%s hardware info fail" % data['ip'])
-                return
+                return build_result("GetHardwareInfoFailure")
+
             hardware_data = rep_json.get("data", {})
             logger.info('get node:%s hardware info' % str(hardware_data))
 
-            gpu_info = list((str(value)+" * "+key) for key,value in hardware_data["gfxcard"].items())[0]
-            cpu_info_list = list((str(value)+" * "+key) for key,value in hardware_data["cpu"].items())
+            gpu_info = list((str(value)+" * "+key) for key, value in hardware_data["gfxcard"].items())[0]
+            cpu_info_list = list((str(value)+" * "+key) for key, value in hardware_data["cpu"].items())
             cpu_info = ','.join(cpu_info_list)
-            mem_info_list = list((str(value)+" * "+key) for key,value in hardware_data["memory"].items())
+            mem_info_list = list((str(value['count']) + " * " + key + ' ' + str(value['size']))
+                                 for key, value in hardware_data["memory"].items())
             mem_info = ','.join(mem_info_list)
 
             server_version_info = hardware_data["server_version"]
@@ -512,7 +523,6 @@ class NodeController(object):
                 "server_version_info":  server_version_info,
                 "type": constants.ROLE_COMPUTE
             }
-
             db_api.add_server_node(node_value)
             if vswitch_uplink_list:
                 db_api.insert_with_many(models.YzyVswitchUplink, vswitch_uplink_list)
@@ -523,7 +533,6 @@ class NodeController(object):
             if part_list:
                 db_api.insert_with_many(models.YzyNodeStorages, part_list)
 
-            self.disable_service(node_uuid, constants.NETWORK_SERVICE)
             networks = db_api.get_networks()
             for network in networks:
                 if switch_uuid != network['switch_uuid']:
@@ -543,30 +552,23 @@ class NodeController(object):
                 ret_code = rep_json.get("code", -1)
                 if ret_code != 0:
                     logger.error("create network failed:%s", rep_json['msg'])
-                    return jsonify(rep_json)
+                    raise Exception("create network failed")
                 logger.info("create network success")
-            self.disable_control_node_deployment(data['ip'])
-
-            # url = "/api/v1/monitor/task"
-            # m_req = {
-            #     "handler": "TimerHandler",
-            #     "command": "update",
-            #     "data": {
-            #         "node_uuid": node_uuid,
-            #         "addr": "http://%s:50000/api/v1/node/update_info" % (data['m_ip'])
-            #     }
-            # }
-            # rep_json = monitor_post(data['ip'], url, m_req)
-            # if rep_json['code'] == 0:
-            #     m_req = {
-            #         "handler": "TimerHandler",
-            #         "command": "resume"
-            #     }
-            #     rep_json = monitor_post(data['ip'], url, m_req)
+            ntp_command = {
+                "command": "set_ntp_sync",
+                "handler": "NodeHandler",
+                "data": {
+                    "controller_ip": controller.ip
+                }
+            }
+            compute_post(data['ip'], ntp_command)
+            TemplateController().node_sync_image(data['pool_uuid'], data['ip'], node_uuid)
+            services = constants.NETWORK_SERVICE.append('yzy-deployment')
+            self.disable_service(node_uuid, services)
         except Exception as e:
             logger.error("init node: %s fail:%s", data['ip'], str(e), exc_info=True)
+            self.rollback_add_node(node_uuid)
             return build_result("CreateNodeFail", node=data['ip'])
-        TemplateController().node_sync_image(data['pool_uuid'], data['ip'], node_uuid)
         return build_result("Success")
 
     def _delete_network_interface(self, ipaddr, network_uuid, vlan_id=None):
@@ -584,30 +586,30 @@ class NodeController(object):
             logger.error("delete network failed:%s", rep_json['msg'])
         logger.info("delete network:%s in %s success", network_uuid, ipaddr)
 
-    def disable_control_node_deployment(self, ip):
-        url = "/api/v1/monitor/task"
-        data = {
-            "handler": "ServiceHandler",
-            "command": "disable",
-            "data": {
-                "service": "yzy-deployment"
-            }
-        }
-        logger.info("disable yzy-deployment in %s", ip)
-        rep_json = monitor_post(ip, url, data)
-        return rep_json
+    # def disable_control_node_deployment(self, ip, service_name='yzy-deployment'):
+    #     url = "/api/v1/monitor/task"
+    #     data = {
+    #         "handler": "ServiceHandler",
+    #         "command": "disable",
+    #         "data": {
+    #             "service": service_name
+    #         }
+    #     }
+    #     logger.info("disable %s in %s", service_name, ip)
+    #     rep_json = monitor_post(ip, url, data)
+    #     return rep_json
 
-    def enable_control_node_deployment(self, ip):
+    def enable_control_node_deployment(self, ip, service_name='yzy-deployment'):
         """开启开机自启初始化服务"""
         url = "/api/v1/monitor/task"
         data = {
             "handler": "ServiceHandler",
             "command": "enable",
             "data": {
-                "service": "yzy-deployment"
+                "service": service_name
             }
         }
-        logger.info("enable yzy-deployment in %s", ip)
+        logger.info("enable %s in %s", service_name, ip)
         rep_json = monitor_post(ip, url, data)
         return rep_json
 
@@ -632,17 +634,24 @@ class NodeController(object):
                     desktop_name[desktop.name] = [instance.name]
                 else:
                     desktop_name[desktop.name].append(instance.name)
+        if sys_desktop or desktop_name:
+            return sys_desktop, desktop_name
+        for instance in instances:
+            if instance.classify == 1:
+                desktop = db_api.get_desktop_with_first({"uuid": instance.desktop_uuid})
             else:
-                # BaseController()._get_instance_storage_path()
-                if status != constants.STATUS_SHUTDOWN:
-                    info = {
-                        "uuid": instance.uuid,
-                        "name": instance.name,
-                        "sys_base": "",
-                        "data_base": ""
-                    }
-                    BaseController()._delete_instance(node.ip, info)
-                    instance.soft_delete()
+                desktop = db_api.get_personal_desktop_with_first({"uuid": instance.desktop_uuid})
+            if status != constants.STATUS_SHUTDOWN:
+                info = {
+                    "uuid": instance.uuid,
+                    "name": instance.name,
+                    "sys_base": "",
+                    "data_base": ""
+                }
+                BaseController()._delete_instance(node.ip, info)
+                instance.soft_delete()
+                desktop.instance_num -= 1
+                desktop.soft_update()
         return sys_desktop, desktop_name
 
     def return_params(self, desktop_name):
@@ -655,12 +664,12 @@ class NodeController(object):
             instance_list.append(name_dict)
         return instance_list
 
-    def get_storage_list(self):
+    def get_storage_list(self, node_uuid):
         """获取磁盘分区信息列表"""
         storage_list = list()
-        template_data = db_api.get_template_data_storage()
+        template_data = db_api.get_template_data_storage(node_uuid)
         storage_list.append(template_data)
-        template_sys = db_api.get_template_sys_storage()
+        template_sys = db_api.get_template_sys_storage(node_uuid)
         storage_list.append(template_sys)
         instance_data = db_api.get_instance_data_storage()
         storage_list.append(instance_data)
@@ -760,7 +769,7 @@ class NodeController(object):
         for back in backs:
             back.soft_delete()
         if status != constants.STATUS_SHUTDOWN:
-            storage_list = self.get_storage_list()
+            storage_list = self.get_storage_list(node_uuid)
             for storage in set(storage_list):
                 # 清理磁盘分区数据
                 url = "/api/v1/monitor/task"
@@ -774,12 +783,58 @@ class NodeController(object):
                 monitor_post(node.ip, url, data)
             # 开启节点初始化服务
             self.enable_control_node_deployment(node.ip)
+            self.enable_control_node_deployment(node.ip, 'ukey')
             # 关闭节点
             result = self.node_task(node.ip, "shutdown")
             if result.get("code", -1) != 0:
                 return build_result("NodeShutdownFailed", node=node.ip)
         node.soft_delete()
         logger.info("delete node:%s success", node_uuid)
+        return build_result("Success")
+
+    def rollback_add_node(self, node_uuid):
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            return build_result("NodeNotExist")
+        uplinks = db_api.get_uplinks_all({'node_uuid': node_uuid})
+        for uplink in uplinks:
+            networks = db_api.get_network_all({'switch_uuid': uplink.vs_uuid})
+            for network in networks:
+                vlan_id = network.vlan_id
+                self._delete_network_interface(node.ip, network.uuid, vlan_id)
+            uplink.soft_delete()
+        nics = db_api.get_nics_all({'node_uuid': node_uuid})
+        for nic in nics:
+            nic_infos = db_api.get_item_with_all(models.YzyInterfaceIp, {'nic_uuid': nic.uuid})
+            for info in nic_infos:
+                info.soft_delete()
+            nic.soft_delete()
+        paths = db_api.get_node_storage_all({'node_uuid': node_uuid})
+        for path in paths:
+            path.soft_delete()
+        node.soft_delete()
+        # 服务信息
+        services = db_api.get_item_with_all(models.YzyNodeServices, {'node_uuid': node_uuid})
+        for service in services:
+            service.soft_delete()
+
+        storage_list = self.get_storage_list(node_uuid)
+        for storage in set(storage_list):
+            # 清理磁盘分区数据
+            url = "/api/v1/monitor/task"
+            data = {
+                "handler": "FileHandler",
+                "command": "delete_file",
+                "data": {
+                    "file_name": storage.path
+                }
+            }
+            monitor_post(node.ip, url, data)
+        # 开启节点初始化服务
+        self.enable_control_node_deployment(node.ip)
+        self.enable_control_node_deployment(node.ip, 'ukey')
+        node.soft_delete()
+        logger.info("rollback node:%s success", node_uuid)
         return build_result("Success")
 
     def node_task(self, ip, command):
@@ -1051,6 +1106,12 @@ class NodeController(object):
         except Exception as e:
             return build_result("NodeIPConnetFail", ip=ip)
 
+    def ping_ip(self, ip):
+        if not icmp_ping(ip, count=3):
+            return build_result("QuorumIPConnectError")
+        return build_result("Success")
+
+
     def update_node(self, uuid, type=None, status=None, name=None, pool_uuid=None):
         try:
             node = db_api.get_node_by_uuid(uuid)
@@ -1068,15 +1129,20 @@ class NodeController(object):
         return build_result("Success")
 
     def update_ip_node(self, data):
+        return jsonify(self._update_ip_node(data))
+
+    def _update_ip_node(self, data):
         try:
+            ha_flag = data.get("ha_flag", False)
             update_ip = db_api.get_nic_ip_by_uuid(data["uuid"])
-            if update_ip.is_manage or update_ip.is_image:
-                logger.error("node update ip fail, network interface[%s] not exist", data['nic_uuid'])
-                return build_result("ManageNetCanNotUpdate")
+            if not ha_flag:
+                if update_ip.is_manage or update_ip.is_image:
+                    logger.error("node update ip fail, network interface[%s] not exist", data['nic_uuid'])
+                    return get_error_result("ManageNetCanNotUpdate")
             nic = db_api.get_nics_first({'uuid': data['nic_uuid']})
             if not nic:
                 logger.error("node add ip, network interface[%s] not exist", data['nic_uuid'])
-                return build_result("NodeNICNotExist")
+                return get_error_result("NodeNICNotExist")
             # 如果是flat网络，需要将IP配置到网桥上
             net_info = dict()
             switchs = db_api.get_virtual_switch_list({"type": constants.FLAT_NETWORK_TYPE})
@@ -1125,17 +1191,26 @@ class NodeController(object):
                 logger.error("node update ip fail: %s", ret_json.get("msg"))
                 code = ret_json.get("code", -1)
                 errcode = get_error_name(code)
-                return build_result(errcode)
+                return get_error_result(errcode)
 
+            logger.info("before update_ip in db: %s", update_ip.ip)
             update_ip.ip = data['ip']
             update_ip.netmask = data['netmask']
             update_ip.soft_update()
+            logger.info("after update_ip in db: %s", update_ip.ip)
+
+            if ha_flag:
+                master_obj = db_api.get_controller_node()
+                logger.info("before node_ip in db: %s", master_obj.ip)
+                master_obj.ip = data['ip']
+                master_obj.soft_update()
+                logger.info("after node_ip in db: %s", master_obj.ip)
         except Exception as e:
             logger.error("node update ip fail, database commit error: %s", e, exc_info=True)
-            return build_result("NodeNICIpAddError")
+            return get_error_result("NodeNICIpAddError")
         
         logger.info("node update ip success!")
-        return build_result("Success", data=data)
+        return get_error_result("Success", data=data)
 
     def update_gate_info(self, data):
         try:
@@ -1227,9 +1302,20 @@ class NodeController(object):
 
     def mn_map_update_node(self, uplinks):
         try:
+            # 已做HA的主备控节点，不允许修改管理IP
+            ha_nic_uuids = list()
+            ha_info_objs = db_api.get_ha_info_all()
+            if ha_info_objs:
+                for ha_info_obj in ha_info_objs:
+                    ha_nic_uuids.append(ha_info_obj.master_nic_uuid)
+                    ha_nic_uuids.append(ha_info_obj.backup_nic_uuid)
+
             for uplink in uplinks:
                 old_nic_ip = db_api.get_nic_ip_by_uuid(uplink['old_ip_uuid'])
                 new_nic_ip = db_api.get_nic_ip_by_uuid(uplink['new_ip_uuid'])
+
+                if old_nic_ip.nic_uuid in ha_nic_uuids or new_nic_ip.nic_uuid in ha_nic_uuids:
+                    return build_result("HaNodeChangeManagementIPError")
 
                 old_nic_ip.is_manage = 0
                 new_nic_ip.is_manage = 1
@@ -1323,7 +1409,7 @@ class NodeController(object):
             raise Exception("node storage info fail: %s" % rep_json.get("msg", ""))
         data = rep_json.get("data", {})
         for k, v in data.items():
-            if isinstance(v, dict) and k not in ['/', '/home', '/boot']:
+            if isinstance(v, dict) and k not in ['/', '/home', '/boot', '/boot/efi']:
                 v.update({"path": k})
                 path_list.append(v)
 
@@ -1768,6 +1854,7 @@ class NodeController(object):
             bond_nic_obj.mac = bond_nic_info["mac"]
             bond_nic_obj.speed = bond_nic_info["speed"]
             bond_nic_obj.status = bond_nic_info["status"]
+            bond_nic_obj.soft_update()
             logger.info("bond: %s update table: yzy_node_network_info, data: %s" %
                         (data["bond_info"]["dev"], bond_nic_info))
             logger.info("bond: %s update table: yzy_node_network_info success" % data["bond_info"]["dev"])
@@ -1782,6 +1869,7 @@ class NodeController(object):
                 else:
                     if bond_nic.mode != data["bond_info"]["mode"]:
                         bond_nic.mode = data["bond_info"]["mode"]
+                        bond_nic.soft_update()
                         logger.info("update yzy_bond_nics: master_name: %s, slave_name: %s, mode: %s" %
                                 (bond_nic.master_name, bond_nic.slave_name, bond_nic.mode))
 
@@ -1818,6 +1906,7 @@ class NodeController(object):
                     ip_obj.gateway = data["gate_info"]["gateway"]
                     ip_obj.dns1 = data["gate_info"]["dns1"]
                     ip_obj.dns2 = data["gate_info"]["dns2"]
+                    ip_obj.soft_update()
 
             # 删除slave网卡上的interface_ip，主要是为了删除新slave上的IP
             for slave_nic in data["slaves"]:
@@ -1909,9 +1998,9 @@ class NodeController(object):
             rep_json = compute_post(data["ipaddr"], _data)
             ret_code = rep_json.get("code", -1)
             if ret_code != 0:
-                logger.error("unbond failed in compute_node: %s", rep_json['msg'])
+                logger.error("unbond failed in compute_node: %s" % rep_json['msg'])
                 return jsonify(rep_json)
-            logger.info("unbond: delete %s in compute_node %s success", data["bond_name"], data["ipaddr"])
+            logger.info("unbond: delete %s in compute_node %s success" % (data["bond_name"], data["ipaddr"]))
 
             # 需要处理3个库表：interface_ip、bond_nics、node_network_info
             # 删除bond网卡上的interface_ip
@@ -2017,9 +2106,24 @@ class NodeController(object):
         node = db_api.get_node_with_first({"ip": master_ip})
         if not node:
             return build_result("NodeNotExist")
+
+        # 主备切换后，更新yzy_ha_info表，master与backup角色对换
+        ha_info_objs = db_api.get_ha_info_all()
+        for ha_info_obj in ha_info_objs:
+            if ha_info_obj.backup_ip == master_ip:
+                ha_info_obj.master_ip, ha_info_obj.backup_ip = ha_info_obj.backup_ip, ha_info_obj.master_ip
+                ha_info_obj.master_nic, ha_info_obj.backup_nic = ha_info_obj.backup_nic, ha_info_obj.master_nic
+                ha_info_obj.master_nic_uuid, ha_info_obj.backup_nic_uuid = ha_info_obj.backup_nic_uuid, ha_info_obj.master_nic_uuid
+                ha_info_obj.master_uuid, ha_info_obj.backup_uuid = ha_info_obj.backup_uuid, ha_info_obj.master_uuid
+                ha_info_obj.soft_update()
+                logger.info("update ha_info[%s] master ip/nic/nic_uuid/node_uuid from %s to %s",
+                            (ha_info_obj.uuid, ha_info_obj.backup_ip, ha_info_obj.master_ip))
+
         if node.type in [constants.ROLE_MASTER, constants.ROLE_MASTER_AND_COMPUTE]:
             logger.info("node role is master, return")
             return build_result("Success")
+
+        # 主备切换后，更新yzy_nodes表的节点type
         origin = db_api.get_controller_node()
         origin_type = origin.type
         if constants.ROLE_MASTER_AND_COMPUTE == origin_type:
@@ -2029,20 +2133,40 @@ class NodeController(object):
         logger.info("update node %s role from %s to %s", origin.ip, origin_type, origin.type)
         origin.soft_update()
         node_type = node.type
-        if constants.ROLE_COMPUTE == node_type:
+        if node_type in [constants.ROLE_SLAVE_AND_COMPUTE, constants.ROLE_SLAVE]:
             node.type = constants.ROLE_MASTER_AND_COMPUTE
         else:
-            node_type = constants.ROLE_MASTER
+            node.type = constants.ROLE_MASTER
         logger.info("update node %s role from %s to %s", node.ip, node_type, node.type)
         node.soft_update()
+
+        # 主备切换后，更新yzy_template、yzy_voi_template表的模板宿主机uuid
         templates = db_api.get_template_with_all({})
         for template in templates:
+            if constants.SYSTEM_DESKTOP == template.classify:
+                continue
             logger.info("update template %s host_uuid to %s", template.name, node.uuid)
             template.host_uuid = node.uuid
             template.soft_update()
+        voi_templates = db_api.get_voi_template_with_all({})
+        for template in voi_templates:
+            if constants.SYSTEM_DESKTOP == template.classify:
+                continue
+            logger.info("update template %s host_uuid to %s", template.name, node.uuid)
+            template.host_uuid = node.uuid
+            template.soft_update()
+
+        # 主备切换后，更新yzy_node_services表
+        # 特别是当备控第一次切换成主控时，其服务列表应从计算服务更新为主控服务
+        ret = monitor_post(node.ip, 'api/v1/monitor/service', {})
+        if ret.get('code') == 0:
+            services = ret['data']
+            logging.info("update service status")
+            update_service_status(node, services, constants.MASTER_SERVICE)
         return build_result("Success")
 
     def ha_sync(self, path):
+
         def send_file():
             store_path = path
             with open(store_path, 'rb') as targetfile:
@@ -2051,14 +2175,572 @@ class NodeController(object):
                     if not data:
                         break
                     yield data
-        if path:
+
+        if not os.path.exists(path):
+            return build_result("Success")
+        else:
             file_name = os.path.split('/')[-1]
-            logger.info("begin to send file %s", path)
+            logger.debug("begin to send file %s", path)
             response = Response(send_file(), content_type='application/octet-stream')
             response.headers["Content-disposition"] = 'attachment; filename=%s' % file_name
+            logger.debug("finish to send file %s", path)
             return response
 
-def update_node_report_info(ip, hostname, data_info):
-    pass
+    def enable_ha(self, data):
+        update_ip_data = data.get("update_ip_data", None)
+        enable_ha_data = data.get("enable_ha_data", None)
+        if not update_ip_data or not enable_ha_data:
+            logger.error("enable_ha ParamError update_ip_data: %s, enable_ha_data: %s" % (update_ip_data, enable_ha_data))
+            return build_result("ParamError", data={"update_ip_data": update_ip_data, "enable_ha_data": enable_ha_data})
+        else:
+            update_ip_ret = self._update_ip_node(update_ip_data)
+            enable_ha_ret = self._enable_ha(enable_ha_data)
+            return build_result("Success", data={"update_ip_ret": update_ip_ret, "enable_ha_ret": enable_ha_ret})
 
+    def _enable_ha(self, data):
+        try:
+            logger.info("data: %s" % data)
+            # if not icmp_ping(data["quorum_ip"], count=3):
+            #     return build_result("QuorumIPConnectError")
+
+            # 找出需要同步的ISO库、数据库备份文件，VOI模板的base盘、差异盘、种子文件、XML
+            paths = list()
+            voi_xlms = list()
+            voi_template_list = list()
+            voi_ha_domain_info = list()
+            for iso in db_api.get_item_with_all(models.YzyIso, {}):
+                paths.append(iso.path)
+            for bak in db_api.get_item_with_all(models.YzyDatabaseBack, {}):
+                paths.append(bak.path)
+            for template in db_api.get_voi_template_with_all({}):
+                voi_template_list.extend(
+                    get_template_images(template.uuid, template.host_uuid, download_base_disk=True, download_torrent=True)
+                )
+                voi_ha_domain_info.append(get_voi_ha_domain_info(template, data["backup_uuid"]))
+                voi_xlms.append("/etc/libvirt/qemu/" + constants.VOI_BASE_NAME % template.id + ".xml")
+
+            info = {
+                "vip": data["vip"],
+                "netmask": data["netmask"],
+                "sensitivity": data["sensitivity"],
+                "quorum_ip": data["quorum_ip"],
+                "master_ip": data["master_ip"],
+                "backup_ip": data["backup_ip"],
+                "master_nic": data["master_nic"],
+                "backup_nic": data["backup_nic"],
+                "paths": paths,
+                "voi_template_list": voi_template_list,
+                "voi_xlms": voi_xlms,
+                "voi_ha_domain_info": voi_ha_domain_info,
+                "post_data": data["post_data"]
+            }
+
+            # 请求本地compute服务配置HA
+            _data = {
+                "command": "enable_ha",
+                "handler": "HaHandler",
+                "data": info
+            }
+            rep_json = compute_post('127.0.0.1', _data, timeout=1800)
+            ret_code = rep_json.get("code", -1)
+            if ret_code != 0:
+                logger.error("enable_ha failed in compute_node: %s" % rep_json['msg'])
+                return rep_json
+            logger.info("enable_ha in compute_node %s and %s success" % (data["master_ip"], data["backup_ip"]))
+
+            # 在yzy_ha_info表新增记录
+            info["uuid"] = create_uuid()
+            info["master_uuid"] = data["master_uuid"]
+            info["backup_uuid"] = data["backup_uuid"]
+            info["master_nic_uuid"] = data["master_nic_uuid"]
+            info["backup_nic_uuid"] = data["backup_nic_uuid"]
+
+            db_api.add_ha_info(info)
+            logger.info("insert in table: yzy_ha_info, data: %s" % info)
+
+            # 将备控节点在yzy_node表中的type更新为2（计算和备控一体）
+            node_obj = db_api.get_node_by_uuid(data["backup_uuid"])
+            node_obj.type = constants.ROLE_SLAVE_AND_COMPUTE
+            node_obj.soft_update()
+            logger.info("update table: yzy_node: node_uuid %s, type %s" % (data["backup_uuid"], node_obj.type))
+        except Exception as e:
+            logger.exception("enable_ha Exception: %s" % str(e), exc_info=True)
+            return get_error_result("EnableHAError", data=str(e))
+        return get_error_result("Success")
+
+    def disable_ha(self, data):
+        try:
+            logger.info("data: %s" % data)
+
+            ha_info_obj = db_api.get_ha_info_by_uuid(data.get("ha_info_uuid", ""))
+            if not ha_info_obj:
+                return build_result("ParamError")
+
+            new_master_ip = ha_info_obj.vip
+            vip_host_ip, peer_host_ip, peer_uuid = self.get_host_and_peer_ip(ha_info_obj)
+
+            # 校验HA运行状态
+            if not self._check_ha_running_status(peer_host_ip):
+                return build_result("HaNotRunningError")
+
+            # 找出需要删除的ISO库、数据库备份文件，VOI模板的base盘、差异盘、种子文件、XML
+            paths = list()
+            voi_xlms = list()
+            voi_template_list = list()
+            for iso in db_api.get_item_with_all(models.YzyIso, {}):
+                paths.append(iso.path)
+            for bak in db_api.get_item_with_all(models.YzyDatabaseBack, {}):
+                paths.append(bak.path)
+            for template in db_api.get_voi_template_with_all({}):
+                voi_template_list.extend(
+                    get_template_images(template.uuid, template.host_uuid, download_base_disk=True, download_torrent=True)
+                )
+                voi_xlms.append("/etc/libvirt/qemu/" + constants.VOI_BASE_NAME % template.id + ".xml")
+
+            # 获取变更主控IP所需信息
+            master_ip_obj = db_api.get_nic_ip_by_ip(vip_host_ip)
+            post_data = {
+                "uuid": master_ip_obj.uuid,
+                "nic_uuid": master_ip_obj.nic_uuid,
+                "nic_name": master_ip_obj.name,
+                "node_ip": "127.0.0.1",
+                "ip": ha_info_obj.vip,
+                "netmask": master_ip_obj.netmask,
+                "ha_flag": True
+            }
+            logger.info("post_data: %s", post_data)
+
+            # 在yzy_ha_info表删除记录
+            ha_info_obj.soft_delete()
+            logger.info("delete in table: yzy_ha_info, ha_info_uuid: %s" % data["ha_info_uuid"])
+
+            # 将peer节点在yzy_node表中的type更新为5（计算）
+            node_obj = db_api.get_node_by_uuid(peer_uuid)
+            node_obj.type = constants.ROLE_COMPUTE
+            node_obj.soft_update()
+            logger.info("update table: yzy_node: node_uuid %s, type %s" % (peer_uuid, node_obj.type))
+
+            # 请求本地compute服务清除HA配置，不等待直接返回
+            logger.info("disable_ha in compute_node %s and %s" % (vip_host_ip, peer_host_ip))
+            _data = {
+                "command": "disable_ha",
+                "handler": "HaHandler",
+                "data": {
+                    "vip_host_ip": vip_host_ip,
+                    "peer_host_ip": peer_host_ip,
+                    "paths": paths,
+                    "voi_template_list": voi_template_list,
+                    "voi_xlms": voi_xlms,
+                    "post_data": post_data
+                }
+            }
+            self._subprocess_compute_post(_data)
+            return build_result("Success", data=new_master_ip)
+        except Exception as e:
+            logger.exception("disable_ha Exception: %s" % str(e), exc_info=True)
+            return build_result("DisableHAError", data=str(e))
+
+    def switch_ha_master(self, data):
+        try:
+            logger.info("data: %s" % data)
+
+            new_vip_host_ip = data.get("new_vip_host_ip", None)
+            vip = data.get("vip", None)
+            if not new_vip_host_ip or not vip:
+                return build_result("ParamError")
+
+            # 如果new_vip_host就是本节点，则无需切换
+            # code, out = cmdutils.run_cmd("ip addr |grep {ip}".format(ip=new_vip_host_ip), ignore_log=True)
+            # if code == 0 and new_vip_host_ip in out:
+            #     logging.info("new_vip_host_ip %s already master, no need to switch" % new_vip_host_ip)
+            #     return build_result("Success")
+
+            code, out = cmdutils.run_cmd("""ip -br a |grep ' UP ' |grep -o '[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*'""",
+                                         ignore_log=True)
+            if code != 0:
+                logger.error(out)
+            else:
+                ip_list = [ip for ip in out.strip('\n').split('\n')]
+                for ip in ip_list:
+                    if ip == new_vip_host_ip:
+                        logging.info("new_vip_host_ip %s already master, no need to switch" % new_vip_host_ip)
+                        return build_result("Success")
+
+            # # 校验HA运行状态
+            # if not self._check_ha_running_status(new_vip_host_ip):
+            #     return build_result("HaNotRunningError")
+
+            # 校验HA运行状态、数据同步状态
+            rep_json = self._ha_status({})
+            data = rep_json.get("data", {})
+            for key in ["ha_enable_status", "ha_running_status", "master_net_status", "backup_net_status"]:
+                if data.get(key, constants.HA_STATUS_UNKNOWN) != constants.HA_STATUS_NORMAL:
+                    return build_result("HaNotRunningError", data=data)
+            if data.get("data_sync_status", constants.HA_STATUS_UNKNOWN) != constants.HA_STATUS_NORMAL:
+                return build_result("HaNotSyncingError", data=data)
+
+            # notify.sh脚本中会发请求更新yzy_node表两个节点的type以及yzy_template表的宿主机uuid，因此本接口不做表处理
+            # 请求本地compute服务切换主备，不等待直接返回
+            logger.info("switch_ha_master at compute node: %s" % new_vip_host_ip)
+            _data = {
+                "command": "switch_ha_master",
+                "handler": "HaHandler",
+                "data": {
+                    "new_vip_host_ip": new_vip_host_ip,
+                    "vip": vip
+                }
+            }
+            self._subprocess_compute_post(_data)
+            return build_result("Success")
+        except Exception as e:
+            logger.exception("switch_ha_master Exception: %s" % str(e), exc_info=True)
+            return build_result("SwitchHaMasterError", data=str(e))
+
+    def ha_status(self, data):
+        return jsonify(self._ha_status(data))
+
+    def _ha_status(self, data):
+        try:
+            if data.get("ha_info_uuid", ""):
+                ha_info_obj = db_api.get_ha_info_by_uuid(data.get("ha_info_uuid", ""))
+            else:
+                ha_info_obj = db_api.get_ha_info_first()
+
+            if not ha_info_obj:
+                return get_error_result("Success")
+                # return get_error_result("ParamError")
+
+            vip_host_ip, peer_host_ip, peer_uuid = self.get_host_and_peer_ip(ha_info_obj)
+            ha_enable_status = constants.HA_STATUS_NORMAL
+            ha_running_status = constants.HA_STATUS_NORMAL
+            master_net_status = constants.HA_STATUS_NORMAL
+            backup_net_status = constants.HA_STATUS_NORMAL
+
+            # 数据同步状态包括3部分：
+            # 1、主控节点上mysql slave 线程是否正常；
+            master_mysql_slave_status = constants.HA_STATUS_UNKNOWN
+            # 2、备控节点上mysql slave 线程是否正常；
+            backup_mysql_slave_status = constants.HA_STATUS_UNKNOWN
+            # 3、后台定时任务同步ISO库和数据库备份文件是否完成；
+            file_sync_status = constants.HA_STATUS_UNKNOWN
+
+            # 本节点ping不通网关（以敏感度为限）：视为主控网络连接状态断开
+            if not icmp_ping(ha_info_obj.quorum_ip, timeout=1, count=ha_info_obj.sensitivity):
+                master_net_status = constants.HA_STATUS_FAULT
+                logger.error("vip_host[%s] ping quorum_ip[%s] failed" % (vip_host_ip, ha_info_obj.quorum_ip))
+
+            # 主控节点上mysql slave 线程报错，视为数据同步状态：未同步
+            query_ret = db.session.execute("show slave status;").first()
+            if query_ret:
+                query_ret = [i for i in query_ret if isinstance(i, str) and i.startswith("Error ")]
+                if query_ret:
+                    logger.error("master node mysql slave status error: %s", query_ret)
+                    master_mysql_slave_status = constants.HA_STATUS_FAULT
+                else:
+                    master_mysql_slave_status = constants.HA_STATUS_NORMAL
+
+            # 本节点ping不通备控：视为HA运行状态故障、备控网络连接状态未知
+            if not icmp_ping(peer_host_ip, timeout=1, count=3):
+                ha_running_status = constants.HA_STATUS_FAULT
+                backup_net_status = constants.HA_STATUS_UNKNOWN
+                logger.error("vip_host[%s] ping peer_host_ip[%s] failed" % (vip_host_ip, peer_host_ip))
+            else:
+                # 本节点keepalived未正常运行：视为HA运行状态故障
+                code, out = cmdutils.run_cmd("systemctl status keepalived", ignore_log=True)
+                if code != 0 or "active (running)" not in out:
+                    ha_running_status = constants.HA_STATUS_FAULT
+                    logger.error("vip_host[%s] keepalived not running" % vip_host_ip)
+                # 备控节点keepalived未正常运行：视为HA运行状态故障
+                # 备控节点ping不通网关（以敏感度为限）：视为备控网络连接状态断开
+                else:
+                    paths = list()
+                    for iso in db_api.get_item_with_all(models.YzyIso, {}):
+                        paths.append(iso.path)
+                    for bak in db_api.get_item_with_all(models.YzyDatabaseBack, {}):
+                        paths.append(bak.path)
+                    _data = {
+                        "command": "check_backup_ha_status",
+                        "handler": "HaHandler",
+                        "data": {
+                            "quorum_ip": ha_info_obj.quorum_ip,
+                            "sensitivity": ha_info_obj.sensitivity,
+                            "paths": paths
+                        }
+                    }
+                    rep_json = compute_post(peer_host_ip, _data)
+                    ret_code = rep_json.get("code", -1)
+                    ret_data = rep_json.get("data", [])
+                    if ret_code != 0 or not ret_data or len(ret_data) != 4:
+                        ha_running_status = constants.HA_STATUS_FAULT
+                        backup_net_status = constants.HA_STATUS_UNKNOWN
+                        logger.error("peer_host[%s] check_backup_ha_status rep_json: %s" % (peer_host_ip, rep_json))
+                    else:
+                        keepalived_status = ret_data[0]
+                        quorum_ip_status = ret_data[1]
+                        backup_mysql_slave_status = ret_data[2]
+                        file_sync_status = ret_data[3]
+                        if keepalived_status != constants.HA_STATUS_NORMAL:
+                            ha_running_status = constants.HA_STATUS_FAULT
+                            logger.error("peer_host[%s] keepalived not running" % peer_host_ip)
+                        if quorum_ip_status != constants.HA_STATUS_NORMAL:
+                            backup_net_status = constants.HA_STATUS_FAULT
+                            logger.error("peer_host[%s] ping quorum_ip[%s] failed" % (peer_host_ip, ha_info_obj.quorum_ip))
+                        # 备控节点上mysql slave 线程报错，视为数据同步状态：未同步
+                        if backup_mysql_slave_status != constants.HA_STATUS_NORMAL:
+                            logger.error("backup node mysql slave status error: %s", backup_mysql_slave_status)
+                        # 后台定时任务同步ISO库和数据库备份文件未完成，视为数据同步状态：未同步
+                        if file_sync_status != constants.HA_STATUS_NORMAL:
+                            logger.error("file sync status error: %s", file_sync_status)
+
+                # isos = db_api.get_item_with_all(models.YzyIso, {})
+                # paths = list()
+                # for iso in isos:
+                #     paths.append(iso.path)
+                # _data = {
+                #     "command": "data_sync_status",
+                #     "handler": "NodeHandler",
+                #     "data": {
+                #         "paths": paths
+                #     }
+                # }
+                # rep_json = compute_post(peer_host_ip, _data)
+                # if rep_json.get('data'):
+                #     data_sync_status = constants.HA_STATUS_NORMAL
+                # else:
+                #     data_sync_status = constants.HA_STATUS_FAULT
+
+            # 3个数据状态都正常，视为HA数据已同步
+            if file_sync_status == constants.HA_STATUS_NORMAL and \
+                    master_mysql_slave_status == constants.HA_STATUS_NORMAL and\
+                    backup_mysql_slave_status == constants.HA_STATUS_NORMAL:
+                data_sync_status = constants.HA_STATUS_NORMAL
+            else:
+                data_sync_status = constants.HA_STATUS_FAULT
+
+            return get_error_result("Success", data={
+                "ha_enable_status": ha_enable_status,
+                "ha_running_status": ha_running_status,
+                "master_net_status": master_net_status,
+                "backup_net_status": backup_net_status,
+                "data_sync_status": data_sync_status,
+                "file_sync_status": file_sync_status,
+                "master_mysql_slave_status": master_mysql_slave_status,
+                "backup_mysql_slave_status": backup_mysql_slave_status
+            })
+        except Exception as e:
+            logger.exception("ha_status Exception: %s" % str(e), exc_info=True)
+            return get_error_result("OtherError", data=str(e))
+
+    def check_ha_done(self):
+        for i in range(5):
+            try:
+                nodes = db_api.get_node_with_all({'deleted': False})
+                return build_result("Success", data={"version": "5.0.0.2"})
+            except Exception as e:
+                time.sleep(1)
+                continue
+        else:
+            return build_result("OtherError")
+
+    def ha_sync_web_post(self, data):
+        """
+        专门给web层调用的接口，如果启用了HA，把指定文件（例如：ISO库文件，数据库备份文件）同步给备控，未启用则不同步。
+        """
+        paths = data.get("paths", None)
+        if paths:
+            ha_sync_file([{"path": p} for p in paths])
+        return build_result("Success")
+
+    def _check_ha_running_status(self, peer_host_ip):
+        # 本节点ping不通备控：视为HA运行状态故障
+        if not icmp_ping(peer_host_ip, count=3):
+            return False
+
+        # 本节点keepalived未正常运行：视为HA运行状态故障
+        code, out = cmdutils.run_cmd("systemctl status keepalived", ignore_log=True)
+        if code != 0 or "active (running)" not in out:
+            return False
+
+        # 备控节点keepalived未正常运行：视为HA运行状态故障
+        _data = {
+            "command": "check_backup_ha_status",
+            "handler": "HaHandler",
+            "data": {}
+        }
+        rep_json = compute_post(peer_host_ip, _data)
+        ret_code = rep_json.get("code", -1)
+        ret_data = rep_json.get("data", [])
+        if ret_code != 0 or not ret_data or len(ret_data) != 4:
+            return False
+
+        if ret_data[0] != constants.HA_STATUS_NORMAL:
+            return False
+        return True
+
+    # def change_ha_status(self, data):
+    #     node_ip = data.get('node_ip', '')
+    #     ha_info_obj = db_api.get_ha_info_by_node_ip(node_ip)
+    #     if not ha_info_obj:
+    #         return build_result("ParamError")
+    #
+    #     ha_running_status = data.get('ha_running_status', None)
+    #     if ha_running_status:
+    #         if ha_running_status not in [constants.HA_STATUS_NORMAL, constants.HA_STATUS_FAULT]:
+    #             return build_result("ParamError")
+    #         ha_info_obj.ha_running_status = ha_running_status
+    #
+    #     net_status = data.get('net_status', None)
+    #     if net_status:
+    #         if net_status not in [constants.HA_STATUS_NORMAL, constants.HA_STATUS_FAULT, constants.HA_STATUS_UNKNOWN]:
+    #             return build_result("ParamError")
+    #         if ha_info_obj.master_ip == node_ip:
+    #             ha_info_obj.master_net_status = net_status
+    #         elif ha_info_obj.backup_ip == node_ip:
+    #             ha_info_obj.backup_net_status = net_status
+    #
+    #     ha_info_obj.soft_update()
+    #     return build_result("Success")
+
+    def _subprocess_compute_post(self, data):
+        bind = SERVER_CONF.addresses.get_by_default('compute_bind', '')
+        if bind:
+            port = bind.split(':')[-1]
+        else:
+            port = constants.COMPUTE_DEFAULT_PORT
+
+        exec_str = """curl -i -X POST -H Content-type:application/json -d"""
+        exec_cmd = exec_str.split(" ")
+        exec_cmd.append(json.dumps(data))
+        exec_cmd.append('http://127.0.0.1:%s/api/v1/' % str(port))
+        subprocess.Popen(exec_cmd)
+
+    def get_host_and_peer_ip(self, ha_info_obj):
+        ips = (ha_info_obj.master_ip, ha_info_obj.backup_ip)
+
+        # 确定peer（无VIP节点）的ip和node_uuid
+        # 由于前端调VIP的yzy-web，而yzy-web只会调本地的yzy-server，则本节点一定是vip_host
+        code, out = cmdutils.run_cmd("ip addr |grep {ip}".format(ip=ips[0]), ignore_log=True)
+        if code == 0 and ips[0] in out:
+            vip_host_ip = ips[0]
+            peer_host_ip = ips[1]
+            peer_uuid = ha_info_obj.backup_uuid
+        else:
+            vip_host_ip = ips[1]
+            peer_host_ip = ips[0]
+            peer_uuid = ha_info_obj.master_uuid
+        logging.info("vip_host_ip: %s, peer_host_ip: %s" % (vip_host_ip, peer_host_ip))
+        return vip_host_ip, peer_host_ip, peer_uuid
+
+    def get_disk_parts(self, data):
+        node_uuid = data.get("node_uuid")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("get disk parts error, node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        cmd = {
+                "command": "get_incre_parts",
+                "handler": "DiskHandler",
+                "data": {
+                }
+            }
+        ret = compute_post(node.ip, cmd)
+        return ret
+
+    def extend_vg(self, data):
+        node_uuid = data.get("node_uuid")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        cmd = {
+                "command": "extend_vg",
+                "handler": "DiskHandler",
+                "data": data
+            }
+        ret = compute_post(node.ip, cmd)
+        return ret
+
+    def vg_detail(self, data):
+        node_uuid = data.get("node_uuid")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        cmd = {
+                "command": "vg_detail",
+                "handler": "DiskHandler",
+                "data": {}
+            }
+        ret = compute_post(node.ip, cmd)
+        return ret
+
+    def extend_lv(self, data):
+        node_uuid = data.get("node_uuid")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        cmd = {
+                "command": "extend_lv",
+                "handler": "DiskHandler",
+                "data": data
+            }
+        ret = compute_post(node.ip, cmd)
+        logger.info("extend lv %s:%s", data['mount_point'], ret)
+        return ret
+
+    def create_lv(self, data):
+        node_uuid = data.get("node_uuid")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        controller = db_api.get_controller_node()
+        if node_uuid != controller.uuid:
+            storages = db_api.get_node_storage_all({"node_uuid": controller.uuid})
+            mount_point = os.path.join(constants.LV_PATH_PREFIX, data['lv_name'])
+            for storage in storages:
+                if mount_point == storage.path:
+                    break
+                else:
+                    return get_error_result("NodeStorageException", name=data['lv_name'])
+        cmd = {
+                "command": "create_lv",
+                "handler": "DiskHandler",
+                "data": data
+            }
+        ret = compute_post(node.ip, cmd)
+        if ret.get('code') == 0:
+            logger.info("add lv %s in %s success", data['lv_name'], data['vg_name'])
+            mount_point = ret['data'].get('mount_point')
+            parts = self.get_node_storage(node.ip)
+            part_list = list()
+            for part in parts:
+                if part['path'] == mount_point:
+                    part_list.append({
+                        "uuid": create_uuid(),
+                        "node_uuid": node_uuid,
+                        "path": mount_point,
+                        "role": '',
+                        'type': part['type'],
+                        'free': part['free'],
+                        'total': part['total'],
+                        'used': part['used']
+                    })
+                    break
+            else:
+                return get_error_result("MountPointNotExist")
+            db_api.insert_with_many(models.YzyNodeStorages, part_list)
+        return ret
+
+    def get_system_run_time(self, data):
+        node_uuid = data.get("node_uuid", "")
+        node = db_api.get_node_by_uuid(node_uuid)
+        if not node:
+            logger.error("node[%s] not exist", node_uuid)
+            return get_error_result("NodeNotExist")
+        url = "/api/v1/monitor/get_time"
+        data = {}
+        ret = monitor_post(node.ip, url, data)
+        return ret
 

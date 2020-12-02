@@ -249,7 +249,16 @@ terminal_conf.current_screen_info = ScreenInfo(Width=1920, Height=1080)
 terminal_conf.show_modify_user_passwd = True
 terminal_conf.termial_setup_passwd = "222222"
 terminal_conf.conf_version = 0
+terminal_conf.hide_tools = True
+terminal_conf.close_desktop_strategy = False
+terminal_conf.close_terminal_strategy = False
+terminal_conf.terminal_setup_passwd = '123456'
 terminal_conf.window_mode = 2
+terminal_conf.top_level_service_ip = "172.16.1.111"
+terminal_conf.teacher_service_ip = "172.16.1.112"
+terminal_conf.classroom_num = 1
+terminal_conf.multicast_ip = "172.16.1.222"
+terminal_conf.multicast_port = 23333
 terminal_conf.disconnect_setup = DisconnectSetup(goto_local_desktop=5, goto_local_auth=True)
 terminal_conf.show = DisplaySetup(show_local_button=True, goto_local_passwd="123456")
 client_info.TerminalConfInfo = terminal_conf

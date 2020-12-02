@@ -59,6 +59,10 @@ class yzyRedis:
         res = self.rds.incr(name)
         return res
 
+    def decr(self, name):
+        res = self.rds.decr(name)
+        return res
+
     def lpush(self, name, item):
         res = self.rds.lpush(name, item)
         return res
@@ -77,6 +81,12 @@ class yzyRedis:
 
     def ltrim(self, name, start, end):
         return self.rds.ltrim(name, start, end)
+
+    def lrange(self, name, start, stop):
+        return self.rds.lrange(name, start, stop)
+
+    def lrem(self, name, num, value):
+        return self.rds.lrem(name, num, value)
 
     @property
     def clean_redis(self):

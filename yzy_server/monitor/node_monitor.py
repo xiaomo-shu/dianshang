@@ -6,17 +6,22 @@ Created:     2020/4/14
 """
 import logging
 import datetime
-from common import constants
+import os
+from common import constants, cmdutils
 from common.config import SERVER_CONF
 from common.utils import monitor_post, icmp_ping, create_uuid, compute_post
 from yzy_server.database import apis as db_api
 from yzy_server.database import models
+from yzy_server.utils import read_file_md5, get_template_storage_path, notify_backup_sync_file
 
 
 logger = logging.getLogger(__name__)
 
 
 def update_node_status():
+    # 启用HA后，主备控节点的type是动态的，先检查HA信息，确保节点type是正确的
+    update_ha_master()
+
     nodes = db_api.get_node_with_all({'deleted': False})
     for node in nodes:
         is_restart = False
@@ -50,10 +55,14 @@ def update_node_status():
                     node.total_mem = mem_info['total']/1024/1024/1024
                     node.mem_utilization = mem_info["utilization"]
                     ret = monitor_post(node.ip, 'api/v1/monitor/cpu', {})
+                    cpu_ratio = 0
                     if ret.get('code') == 0:
                         cpu_info = ret['data']
+                        cpu_ratio = cpu_info["utilization"]
                         node.cpu_utilization = cpu_info["utilization"]
                     node.soft_update()
+                    if cpu_ratio >= 95:
+                        status = constants.STATUS_ERROR
                     ret = monitor_post(node.ip, 'api/v1/monitor/service', {})
                     if ret.get('code') == 0:
                         services = ret['data']
@@ -88,6 +97,105 @@ def update_node_status():
         # 只要节点没关机，就可以请求monitor服务去获取磁盘使用信息
         if status != constants.STATUS_SHUTDOWN:
             update_node_storage(node.ip, node.uuid)
+
+
+def update_ha_master():
+    is_vip, is_master, is_backup = False, False, False
+    current_ip = None
+    ha_info_obj = db_api.get_ha_info_first()
+    if ha_info_obj:
+        # logger.info("ha_info before monitor update: %s" % ha_info_obj.dict())
+
+        # 获取本机所有启用网口的ip，查看本节点的ip在ha_info表中是master_ip还是backup_ip
+        code, out = cmdutils.run_cmd("""ip -br a |grep ' UP ' |grep -o '[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*'""", ignore_log=True)
+        if code != 0:
+            logger.error(out)
+        else:
+            ip_list = [ip for ip in out.strip('\n').split('\n')]
+            for ip in ip_list:
+                if ip == ha_info_obj.vip:
+                    is_vip = True
+                elif ip == ha_info_obj.master_ip:
+                    is_master = True
+                elif ip == ha_info_obj.backup_ip:
+                    is_backup = True
+
+            if not is_vip:
+                logger.error("server running without vip[%s]" % ha_info_obj.vip)
+            else:
+                if not is_master and not is_backup:
+                    logger.error("server running without master_ip[%s], backup_ip[%s]" % (ha_info_obj.master_ip, ha_info_obj.backup_ip))
+                elif is_master and is_backup:
+                    logger.error("server running with both master_ip[%s], backup_ip[%s]" % (ha_info_obj.master_ip, ha_info_obj.backup_ip))
+                elif is_master and not is_backup:
+                    current_ip = ha_info_obj.master_ip
+                elif not is_master and is_backup:
+                    # 如果发现本节点的ip在ha_info表中是backup_ip，说明notify.sh脚本中调用server服务/node/master接口去更新数据库的操作失败了
+                    # 检查并修正ha_info表中的ip
+                    current_ip = ha_info_obj.backup_ip
+                    ha_info_obj.master_ip, ha_info_obj.backup_ip = ha_info_obj.backup_ip, ha_info_obj.master_ip
+                    logger.info("update ha_info[%s] master_ip from %s to %s",
+                                (ha_info_obj.uuid, ha_info_obj.backup_ip, ha_info_obj.master_ip))
+
+                if current_ip:
+                    # current_ip所在节点应该为master，检查并修正ha_info表中node_uuid、nic、nic_uuid
+                    current_node_obj = db_api.get_node_by_ip(current_ip)
+                    if current_node_obj.uuid == ha_info_obj.backup_uuid:
+                        ha_info_obj.master_uuid, ha_info_obj.backup_uuid = ha_info_obj.backup_uuid, ha_info_obj.master_uuid
+                        logger.info("update ha_info[%s] master_uuid from %s to %s",
+                                    (ha_info_obj.uuid, ha_info_obj.backup_uuid, ha_info_obj.master_uuid))
+                    current_ip_obj = db_api.get_nic_ip_by_ip(current_ip)
+                    if current_ip_obj.nic_uuid == ha_info_obj.backup_nic_uuid:
+                        ha_info_obj.master_nic_uuid, ha_info_obj.backup_nic_uuid = ha_info_obj.backup_nic_uuid, ha_info_obj.master_nic_uuid
+                        logger.info("update ha_info[%s] master_nic_uuid from %s to %s",
+                                    (ha_info_obj.uuid, ha_info_obj.backup_nic_uuid, ha_info_obj.master_nic_uuid))
+                    if ha_info_obj.master_nic != ha_info_obj.backup_nic and current_ip_obj.name == ha_info_obj.backup_nic:
+                        ha_info_obj.master_nic, ha_info_obj.backup_nic = ha_info_obj.backup_nic, ha_info_obj.master_nic
+                        logger.info("update ha_info[%s] master_nic from %s to %s",
+                                    (ha_info_obj.uuid, ha_info_obj.backup_nic, ha_info_obj.master_nic))
+                    ha_info_obj.soft_update()
+
+                    # 检查并修正backup_uuid节点的type
+                    real_backup_node_obj = db_api.get_node_by_uuid(ha_info_obj.backup_uuid)
+                    if real_backup_node_obj.type not in [constants.ROLE_SLAVE_AND_COMPUTE, constants.ROLE_SLAVE]:
+                        wrong_type = real_backup_node_obj.type
+                        if real_backup_node_obj.type in [constants.ROLE_MASTER_AND_COMPUTE, constants.ROLE_COMPUTE]:
+                            real_backup_node_obj.type = constants.ROLE_SLAVE_AND_COMPUTE
+                        else:
+                            real_backup_node_obj.type = constants.ROLE_SLAVE
+                        real_backup_node_obj.soft_update()
+                        logger.info("update real_backup_node[%s] role from %s to %s", real_backup_node_obj.ip, wrong_type,
+                                    real_backup_node_obj.type)
+
+                    # 检查并修正master_uuid节点的type
+                    if current_node_obj.type not in [constants.ROLE_MASTER, constants.ROLE_MASTER_AND_COMPUTE]:
+                        wrong_type = current_node_obj.type
+                        if wrong_type in [constants.ROLE_SLAVE_AND_COMPUTE, constants.ROLE_COMPUTE]:
+                            current_node_obj.type = constants.ROLE_MASTER_AND_COMPUTE
+                        else:
+                            current_node_obj.type = constants.ROLE_MASTER
+                        current_node_obj.soft_update()
+                        logger.info("update current_node[%s] role from %s to %s", current_node_obj.ip, wrong_type,
+                                    current_node_obj.type)
+
+                    # 检查并修正yzy_template、yzy_voi_template表的模板宿主机uuid
+                    templates = db_api.get_template_with_all({})
+                    for template in templates:
+                        if constants.SYSTEM_DESKTOP == template.classify:
+                            continue
+                        if template.host_uuid != current_node_obj.uuid:
+                            template.host_uuid = current_node_obj.uuid
+                            template.soft_update()
+                            logger.info("update template %s host_uuid to %s", template.name, current_node_obj.uuid)
+
+                    voi_templates = db_api.get_voi_template_with_all({})
+                    for template in voi_templates:
+                        if constants.SYSTEM_DESKTOP == template.classify:
+                            continue
+                        if template.host_uuid != current_node_obj.uuid:
+                            template.host_uuid = current_node_obj.uuid
+                            template.soft_update()
+                            logger.info("update voi template %s host_uuid to %s", template.name, current_node_obj.uuid)
 
 
 def update_service_status(node, services, node_services):
@@ -151,7 +259,7 @@ def update_node_storage(ipaddr, node_uuid):
     data = rep_json.get("data", {})
     logger.debug("disk usage info:%s", rep_json)
     for k, v in data.items():
-        if isinstance(v, dict) and k not in ['/', '/home', '/boot']:
+        if isinstance(v, dict) and k not in ['/', '/home', '/boot', '/boot/efi']:
             for storage in storages:
                 if storage.path == k:
                     if storage.used != int(v['used']) or storage.free != int(v['free']):
@@ -186,44 +294,50 @@ def update_node_storage(ipaddr, node_uuid):
     return
 
 
-def sync_request(ipaddr, path):
-    controller_image = db_api.get_controller_image()
-    bind = SERVER_CONF.addresses.get_by_default('server_bind', '')
-    if bind:
-        port = bind.split(':')[-1]
-    else:
-        port = constants.SERVER_DEFAULT_PORT
-    endpoint = "http://%s:%s" % (controller_image.ip, port)
-    command_data = {
-        "command": "ha_sync",
-        "handler": "NodeHandler",
-        "data": {
-            "path": path,
-            "endpoint": endpoint,
-            "url": constants.HA_SYNC_URL,
-        }
-    }
-    logger.info("sync the file %s to %s", path, ipaddr)
-    rep_json = compute_post(ipaddr, command_data, timeout=600)
-    logger.info("sync the file %s to %s end, rep_json:%s", path, ipaddr, rep_json)
-    return rep_json
-
-
 def ha_sync_task():
     """
-    同步iso库文件和数据库备份文件到备控
+    通知备控检查文件同步情况，下载缺少的，删除多余的
+    范围：iso库、数据库备份文件、VOI模板的实际启动盘、base盘、差异盘、种子文件
     """
-    nodes = db_api.get_node_with_all({})
-    flag = False
-    for node in nodes:
-        if node.type in [constants.ROLE_SLAVE, constants.ROLE_SLAVE_AND_COMPUTE]:
-            flag = True
-            break
-    if flag:
-        isos = db_api.get_item_with_all(models.YzyIso, {})
-        for iso in isos:
-            sync_request(node.ip, iso.path)
-        db_backs = db_api.get_item_with_all(models.YzyDatabaseBack, {})
-        for backup in db_backs:
-            sync_request(node.ip, backup.path)
+    ha_info_obj = db_api.get_ha_info_first()
+    if ha_info_obj:
+        paths = list()
+        for iso in db_api.get_item_with_all(models.YzyIso, {}):
+            paths.append({"path": iso.path, "md5": iso.md5_sum})
+        if paths:
+            notify_backup_sync_file(ha_info_obj.master_ip, ha_info_obj.backup_ip, paths, check_path=os.path.dirname(paths[0]["path"]))
 
+        backs = list()
+        for backup in db_api.get_item_with_all(models.YzyDatabaseBack, {}):
+            backs.append({"path": backup.path, "md5": backup.md5_sum})
+        if backs:
+            notify_backup_sync_file(ha_info_obj.master_ip, ha_info_obj.backup_ip, backs, check_path=os.path.dirname(backs[0]["path"]))
+
+        templates = list()
+        sys_base, data_base = get_template_storage_path(ha_info_obj.master_uuid)
+        for dir_path in [sys_base, os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME),
+                         data_base, os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME)]:
+            find_file_to_sync(dir_path, templates)
+        find_xml_to_sync("/etc/libvirt/qemu/", templates)
+        if templates:
+            # 模板不删除多余的，容易导致正在刚创建的模板磁盘文件被删除
+            notify_backup_sync_file(ha_info_obj.master_ip, ha_info_obj.backup_ip, templates)
+
+
+def find_file_to_sync(dir_path, ret_list):
+    # VOI模板磁盘文件
+    for file in os.listdir(dir_path):
+        file_path = os.path.join(dir_path, file)
+        if file_path.endswith(constants.IMAGE_CACHE_DIRECTORY_NAME):
+            continue
+        if os.path.isfile(file_path):
+            logger.info("start reading: %s", file)
+            ret_list.append({"path": file_path, "md5": read_file_md5(file_path)})
+            logger.info("finish reading: %s", file)
+
+def find_xml_to_sync(dir_path, ret_list):
+    # VOI模板XML文件
+    for file in os.listdir(dir_path):
+        if file.startswith(constants.VOI_BASE_NAME[:3]):
+            file_path = os.path.join(dir_path, file)
+            ret_list.append({"path": file_path, "md5": read_file_md5(file_path)})

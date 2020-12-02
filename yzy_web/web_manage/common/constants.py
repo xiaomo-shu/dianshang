@@ -16,6 +16,7 @@ MONITOR_DEFAULT_PORT = 50002
 TERMINAL_DEFAULT_PORT = 50003
 WEB_DEFAULT_PORT = 50004
 VOI_TERMINAL_DEFAULT_PORT = 50005
+UKEY_DEFAULT_PORT = 50010
 
 CONFIG_PATH = os.path.join(BASE_DIR, 'config', 'yzy_kvm.ini')
 EDUCATION_TYPE = 1
@@ -27,6 +28,8 @@ DEFAULT_ISO_PATH = '/opt/iso/'
 IMAGE_FILE_PREFIX = 'version_%s_'
 LOG_FILE_PATH = '/var/log/yzy_kvm/'
 LOG_DOWN_PATH = '/var/log/yzy_kvm/log_down'
+TERMINAL_RESOURCES_PATH = "/opt/terminal_resources.xlsx"
+TERMINAL_HARDWARE_PATH = "/opt/terminal_hardware.xlsx"
 
 # 终端日志文件地址
 TERMINAL_LOG_PATH = '/opt/terminal/log/'
@@ -41,6 +44,7 @@ INSTANCE_DATA = 4
 # 磁盘角色，系统盘/数据盘
 IMAGE_TYPE_SYSTEM = 'system'
 IMAGE_TYPE_DATA = 'data'
+IMAGE_COMMIT_VERSION = 2
 
 # 个人桌面中的随机桌面
 RANDOM_DESKTOP = 1
@@ -112,3 +116,63 @@ ROLE_SLAVE_AND_COMPUTE = 2
 ROLE_MASTER = 3
 ROLE_SLAVE = 4
 ROLE_COMPUTE = 5
+
+# 节点应有的服务
+COMPUTE_SERVICE = ["libvirtd", "yzy-compute", "yzy-monitor", "yzy-upgrade"]
+NETWORK_SERVICE = ["mariadb", "nginx", "redis", "yzy-web", "yzy-server", "yzy-terminal",
+                   "ukey", "top_server", "yzy-terminal-agent", "torrent"]
+MASTER_SERVICE = COMPUTE_SERVICE + NETWORK_SERVICE
+
+# 教学分组
+EDUCATION_GROUP = 1
+# 用户分组
+PERSONAL_GROUP = 2
+
+# 课表已启用
+COURSE_SCHEDULE_ENABLED = 1
+# 课表已禁用
+COURSE_SCHEDULE_DISABLED = 0
+
+# 本周有课表
+WEEK_OCCUPIED = 1
+# 本周无课表
+WEEK_NOT_OCCUPIED = 0
+
+# 学期有课表
+TERM_OCCUPIED = 1
+# 学期无课表
+TERM_NOT_OCCUPIED = 0
+
+# BT传输任务类型
+BT_DOWNLOAD_TASK = 1
+BT_UPLOAD_TASK = 2
+
+# 任务信息状态
+TASK_ERROR = "error"
+TASK_RUNNING = "running"
+TASK_QUEUE = "queue"
+TASK_COMPLETE = "complete"
+
+# 任务名称及类型映射关系
+NAME_TYPE_MAP = {
+    1: "上传镜像",
+    2: "发布镜像",
+    3: "桌面组批量开机",
+    4: "桌面组批量关机",
+    5: "桌面组批量重启",
+    6: "导出用户数据",
+    7: "新建模板",
+    8: "复制模板",
+    9: "下载模板",
+    10: "桌面定时开关机",
+    11: "节点定时关机",
+    12: "终端定时关机",
+    13: "差异盘同传",
+    14: "系统盘创建"
+}
+
+CHUNKSIZE = Ki * 64  # 64kB
+
+WEB_CLIENT_ID = 101
+
+NFS_MOUNT_POINT_PREFIX = '/opt/nfs_'

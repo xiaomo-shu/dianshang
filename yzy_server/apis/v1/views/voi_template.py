@@ -148,7 +148,9 @@ class VoiTemplateAPI(MethodView):
                 """
                 template_uuid = data.get("uuid", "")
                 desc = data.get('desc', "")
-                result = VoiTemplateController().upgrade_template(template_uuid, desc)
+                is_upload = data.get("is_upload", False)                # 是否为终端上传
+                upload_diff_info = data.get("upload_diff_info", None)               # 终端上传差分
+                result = VoiTemplateController().upgrade_template(template_uuid, desc, is_upload, upload_diff_info)
 
             elif action == "iso_save":
                 template_uuid = data.get("uuid", "")
@@ -292,6 +294,8 @@ class VoiTemplateDiskAPI(MethodView):
                 result = VoiTemplateController().get_info_by_system_disk(data)
             elif action == "upload":
                 result = VoiTemplateController().upload_template_diff_disk(data)
+            elif action == "save_torrent":
+                result = VoiTemplateController().save_torrent_file(data)
             elif action == "download":
                 result = VoiTemplateController().download_template_diff_disk(data)
             else:

@@ -21,6 +21,8 @@ class VoiTerminalEduAPI(MethodView):
             logger.info("post data: {}".format(data))
             if action == "group":
                 return VoiTerminalController().education_group(data)
+            if action == "conf_groups_list":
+                return VoiTerminalController().education_config_groups()
             elif action == "desktop_bind":
                 return VoiTerminalController().terminal_desktop_bind(data)
             if action == "groups":
@@ -33,6 +35,8 @@ class VoiTerminalEduAPI(MethodView):
                 return VoiTerminalController().update_terminal_desktop_bind(data)
             if action == "desktop_ip_order":
                 return VoiTerminalController().order_terminal_desktop_ip(data)
+            if action == "update_desktop_sent_flag":
+                return VoiTerminalController().update_desktop_sent_flag(data)
             else:
                 return abort_error(404)
         except Exception as e:

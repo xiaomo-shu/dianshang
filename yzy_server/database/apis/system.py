@@ -36,6 +36,13 @@ def create_warn_setup(values):
     db.session.flush()
 
 
+def create_task_info(values):
+    task = YzyTask()
+    task.update(values)
+    db.session.add(task)
+    db.session.flush()
+
+
 def get_database_backup_first(item):
     backup = model_query(YzyDatabaseBack).filter_by(**item).first()
     return backup
@@ -79,3 +86,13 @@ def get_operation_log_all(item):
 def get_warn_setup_first(item):
     warn_setup = model_query(YzyWarnSetup).filter_by(**item).first()
     return warn_setup
+
+
+def get_task_info_first(item):
+    task = model_query(YzyTask).filter_by(**item).first()
+    return task
+
+
+def get_task_with_type_all(item):
+    tasks = model_query(YzyTask).filter(YzyTask.type.in_(item)).all()
+    return tasks

@@ -101,6 +101,7 @@ class ManageServiceHandler:
             terminal_conf.current_screen_info.Height = program['current_screen_info']['height']
             terminal_conf.show_modify_user_passwd = program['show_modify_user_passwd']
             terminal_conf.terminal_setup_passwd = program['terminal_setup_passwd']
+            terminal_conf.hide_tools = program['hide_tools']
 
             windows = setup_info['windows']
             terminal_conf.window_mode = windows['window_mode']
@@ -110,6 +111,13 @@ class ManageServiceHandler:
             terminal_conf.show = DisplaySetup()
             terminal_conf.show.show_local_button = windows['show']['show_local_button']
             terminal_conf.show.goto_local_passwd = windows['show']['goto_local_passwd']
+
+            teaching = setup_info['teaching']
+            terminal_conf.top_level_service_ip = teaching['top_level_service_ip']
+            terminal_conf.teacher_service_ip = teaching['teacher_service_ip']
+            terminal_conf.classroom_num = teaching['classroom_num']
+            terminal_conf.multicast_ip = teaching['multicast_ip']
+            terminal_conf.multicast_port = teaching['multicast_port']
         except Exception as err:
             logging.error('err {}'.format(err))
             logging.error(''.join(traceback.format_exc()))
@@ -134,18 +142,26 @@ class ManageServiceHandler:
                     'height': 0
                  },
                 'show_modify_user_passwd': False,
-                'terminal_setup_passwd': "" 
+                'terminal_setup_passwd': "",
+                'hide_tools': True
             },
             'windows': {
                 'window_mode': 1,
                 'disconnect_setup': {
                     'goto_local_desktop': 0,
-                    'goto_local_auth':False 
+                    'goto_local_auth': False
                 },
                 'show': {
                     'show_local_button': False,
                     'goto_local_passwd': "" 
                 }
+            },
+            'teaching': {
+                'top_level_service_ip': "",
+                'teacher_service_ip': "",
+                'classroom_num': 0,
+                'multicast_ip': "",
+                'multicast_port': 0
             }
         }
         terminal_values = {
@@ -330,7 +346,7 @@ class ManageServiceHandler:
                         request_url = "/api/v1/terminal/education/edu_desktops"
                         logging.debug("request yzy_server {}, {}".format(request_url, request_data))
                         server_ret = self.http_client.post(request_url, request_data)
-                    logging.debug("get yzy_server {} {},".format(request_url, server_ret))
+                    logging.debug("get terminal_ip {} yzy_server {} {},".format(qry.ip, request_url, server_ret))
                     if server_ret.get("code", -1) == 0:
                         ret_data = server_ret['data']
                         for desktop_group in ret_data:
@@ -342,12 +358,12 @@ class ManageServiceHandler:
                                                  desktop_group['os_type']))
                     else:
                         logging.error("return code: {}, message: {}".format(server_ret["code"], server_ret["msg"]))
-                logging.debug("Return terminal: desktop_group_list = {}".format(desktop_group_list))
+                logging.debug("Return terminal mac {}: desktop_group_list = {}".format(mac, desktop_group_list))
                 return desktop_group_list
         except Exception as err:
             logging.error(err)
             logging.error(''.join(traceback.format_exc()))
-            logging.debug("Return terminal: desktop_group_list = {}".format(desktop_group_list))
+            logging.debug("Return terminal mac:{} desktop_group_list = {}".format(mac, desktop_group_list))
             return desktop_group_list
 
     @timefn
@@ -612,6 +628,7 @@ class ManageServiceHandler:
                 'program': {
                     'server_ip': terminal_info.server_info.Ip,
                     'server_port': terminal_info.server_info.Port,
+                    'hide_tools': terminal_info.hide_tools,
                     'screen_info_list': ','.join(["{}*{}".format(element.Width, element.Height)
                                                   for element in terminal_info.screen_info_list]),
                     'current_screen_info': {
@@ -631,6 +648,13 @@ class ManageServiceHandler:
                         'show_local_button': terminal_info.show.show_local_button,
                         'goto_local_passwd': terminal_info.show.goto_local_passwd
                     }
+                },
+                'teaching': {
+                    'top_level_service_ip': terminal_info.top_level_service_ip,
+                    'teacher_service_ip': terminal_info.teacher_service_ip,
+                    'classroom_num': terminal_info.classroom_num,
+                    'multicast_ip': terminal_info.multicast_ip,
+                    'multicast_port': terminal_info.multicast_port
                 }
             }
             # get group_uuid

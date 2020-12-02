@@ -56,7 +56,6 @@ def get_task_first_with_progress_desc(item):
 
 def get_image_task_state_first(item):
     result = model_query(YzyTaskInfo).filter_by(**item).\
-        order_by(YzyTaskInfo.progress.desc()).\
         order_by(YzyTaskInfo.id.desc()).first()
     return result
 

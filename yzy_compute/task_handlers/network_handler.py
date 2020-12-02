@@ -26,16 +26,6 @@ class NetworkProcess(object):
         cmd = getattr(self, command)
         return cmd()
 
-    def test(self):
-        """
-         {
-            "command": "test",
-            "handler": "NetworkHandler",
-        }
-        """
-        logging.info('test received')
-        return {"ip" : "172.16.1.66"}
-
     def create(self):
         """
         :param task:

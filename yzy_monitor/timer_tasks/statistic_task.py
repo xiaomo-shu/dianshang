@@ -147,7 +147,7 @@ class StatisticTask(BaseTask):
         try:
             nics_io = psutil.net_io_counters(pernic=True)
             virtual_net_device = os.listdir('/sys/devices/virtual/net/')
-            physical_net_device = [dev for dev in nics_io if dev not in virtual_net_device]
+            physical_net_device = [dev for dev in nics_io if dev not in virtual_net_device and not dev.startswith("tap")]
             monitor_net_devices = physical_net_device
             # add bond, drop bond's slave physical nic
             bond_info = self.get_bonds_dict()
@@ -164,7 +164,7 @@ class StatisticTask(BaseTask):
                     if nic not in current_app.statistic['nic_util'].keys():
                         current_app.statistic['nic_util'][nic] = {}
                         current_app.statistic['nic_util'][nic]['ip'] = ""
-                        if psutil.net_if_addrs()[nic][0].family == socket.AF_INET:
+                        if (nic in psutil.net_if_addrs()) and (psutil.net_if_addrs()[nic][0].family == socket.AF_INET):
                             current_app.statistic['nic_util'][nic]['ip'] = psutil.net_if_addrs()[nic][0].address
                         current_app.statistic['nic_util'][nic]['read_bytes'] = []
                         current_app.statistic['nic_util'][nic]['write_bytes'] = []
@@ -185,8 +185,8 @@ class StatisticTask(BaseTask):
         try:
             with self.app.app_context():
                 disks_io = psutil.disk_io_counters(perdisk=True)
-                for disk_name in self.disk_list:
-                    disk_io = disks_io[disk_name]
+                for disk_name in self.get_disk_list():
+                    # disk_io = disks_io[disk_name]
                     write_bytes = disks_io[disk_name].write_bytes
                     read_bytes = disks_io[disk_name].read_bytes
                     io_use_ticks = self.get_disk_io_ticks(disk_name)

@@ -78,6 +78,7 @@
 		1022: "watermark_switch",   # 水印开关通知
 		1023: "ssh_upload_desktop",
 		1024: "update_desktop_group_info",
+		1025: "cancel_send_desktop",
 	
 		9000: "heartbeat",
 		9001: "terminal_login",
@@ -103,7 +104,12 @@
 		9021: "p_to_v_state",
 		9022: "diff_disk_upload",
 		9023: "diff_disk_download",
-		9024: "desktop_login"
+		9024: "desktop_login",
+		9025: "bt_task_state",
+		9026: "put_desktop_group_list",
+		9027: "bt_upload_state",
+        9028: "query_teach_pc",   #查询教师机
+        9029: "update_performance",    # 上报终端性能信息
 	}
 
 
@@ -119,7 +125,7 @@
 	```
 
 #### 2、终端关机/重启/删除/更新资源枚举信息 请求 ####
-* 命令名称：shutdown/restart/update_desktop_group_info
+* 命令名称：shutdown/restart/delete/update_desktop_group_info/cancel_send_desktop
 
 * server 请求/返回 body 
     ```
@@ -283,6 +289,8 @@
 		    "name": "desktop_name",
 		    // 桌面描述
 		    "desc" : "qq",
+		    // 差分模式，0-不合并，1-合并
+		    "diff_mode": 0,
 			// 桌面uuid
 			"uuid": "f15a1759-789e-4e17-a3e1-e723121e9314",
 			// 系统类型， 
@@ -294,13 +302,17 @@
 				  "type":0,
 				  "dif_level":1,
 				  // 磁盘文件名称前缀 
-				  "prefix": "voi"
+				  "prefix": "voi",
+				  // 操作id base - 0 , 其他累加
+				  "operate_id": 0,  
 				  "real_size":8888888888,
 				  "reserve_space":8888888888
 				},
 				{"uuid":"92f9d1ba-cb4a-41ba-971a-618f9e306571", 
 				  "type":1,
 				  "dif_level":1,
+				  // 操作id base - 0 , 其他累加
+				  "operate_id": 0,  
 				  "real_size":8888888888,
 				  "reserve_space":8888888888
 				},
@@ -553,7 +565,8 @@
 * client 请求/返回 body 
     ```
 	{
-		"mac": "00:50:56:C0:00:08"
+		"mac": "00:50:56:C0:00:08",
+		"resolutions" : "800*600;1920*1080" 
 	}
 	
 	{
@@ -601,7 +614,9 @@
 				"auto_desktop": 0
 			},
 			"program": {
-				"server_ip": "172.16.1.29"
+				"server_ip": "172.16.1.29",
+				"screen_resolution" : "800*600",
+				"resolutions" : "800*600;1920*1080" 
 			}
 		}
 	  }
@@ -656,7 +671,8 @@
 				"auto_desktop": 0
 			},
 			"program": {
-				"server_ip": "172.16.1.29"
+				"server_ip": "172.16.1.29",
+				"screen_resolution" : "800*600"
 			}
 		}
 	}
@@ -688,6 +704,7 @@
     | auto_desktop | 自动进入桌面      | 是   |mode    | int      | 0-不自动进入、1 自动进入桌面      |
 	| program      | 设置程序          | 是   |setup_info | object|                                   |
 	| server_ip    | 终端管理服务地址  | 是   |program    | str   |                                   |
+	                                  |
 	
 	
 #### 7、终端获取资源枚举列表请求 ####
@@ -724,12 +741,16 @@
 				"desktop_gateway": "192.168.1.254",
 				"desktop_dns1": "8.8.8.8",
 				"desktop_dns2": "114.114.114.114",
+				// 差分模式，0-不合并，1-合并
+		        "diff_mode": 0,
 				"disks": [
 					{
 						"uuid":"91f9d1ba-cb4a-41ba-971a-618f9e306571", 
 						"type":1,
 						"dif_level":1,
 						"prefix": "voi",
+						// 操作id base - 0 , 其他累加
+				        "operate_id": 0,  
 						"real_size": "8888888888",
 						"reserve_size" : "50"
 					},
@@ -738,6 +759,8 @@
 						"type":1,
 						"dif_level":1,
 						"prefix": "voi",
+						// 操作id base - 0 , 其他累加
+				        "operate_id": 1,  
 						"real_size": "8888888888",
 						"reserve_size" : "50"
 					},
@@ -746,6 +769,8 @@
 						"type":1,
 						"dif_level":1,
 						"prefix": "voi",
+						// 操作id base - 0 , 其他累加
+				        "operate_id": 0,  
 						"real_size": "8888888888",
 						"reserve_size" : "50"
 					}
@@ -770,6 +795,8 @@
 				"desktop_gateway": "192.168.1.254",
 				"desktop_dns1": "8.8.8.8",
 				"desktop_dns2": "114.114.114.114",
+				// 差分模式，0-不合并，1-合并
+		        "diff_mode": 0,
 				"disks": [
 					{
 						"uuid":"91f9d1ba-cb4a-41ba-971a-618f9e306571", 
@@ -791,12 +818,13 @@
 					},
 					{
 						"uuid":"91f9d1ba-cb4a-41ba-971a-618f9e306571", 
-						"type":1,
+						"type":2,
 						"dif_level":1,
 						"max_dif": 1,
 						"prefix": "voi",
 						"real_size": "8888888888",
-						"reserve_size" : "50"
+						"reserve_size" : "50",
+						"restore_flag" : 1
 					}
 				]	
 			}
@@ -826,6 +854,7 @@
 	| desktop_dns1        | 桌面域名解析服务器地址1         | 是   |      | str      |         |
 	| desktop_dns2        | 桌面域名解析服务器地址2   | 是   |      | str      |  可能为空       |
 	| os_sys_type         | 操作系统名称     | 是   |      | int      | 0-other 1-windows_7_x64, 2-windows_7_x32, 3-windows_10,        |
+	| diff_mode         | 差分合并模式 | 是   |      | int      | // 差分模式，0-不合并，1-合并|
 	| disks               | 桌面磁盘列表     | 是   |  desktop_group_list    | array      | 每个桌面默认有三个磁盘：系统盘、数据盘、共享盘        |
 	| uuid                | 磁盘UUID         | 是   |  disks    | str      |  |
 	| type                | 磁盘类型         | 是   |  disks    | int      | 0-系统磁盘 1-数据磁盘 2-共享磁盘  |
@@ -834,7 +863,9 @@
 	| prefix              | 磁盘文件名前缀   | 是   |  disks    | str      | 磁盘文件名组成："prefix"_"dif_level"_"uuid" |
 	| real_size           | 磁盘qcow文件实际大小| 是   |  disks    | str      | 单位为512-字节块大小(扇区大小) |
 	| reserve_size        | 磁盘qcow文件解析virtual_size大小  | 是   |  disks    | str      | 单位为GB512-字节块大小(扇区大小) |
-
+	| restore_flag        | 共享盘磁盘清空与不清空标识  | 是   |  disks    | int      | 0-不清空 1-清空  |
+    | operate_id          | 操作版本号 | 是   |disks    | int   | base盘为0， 其他累加|  
+    
 
 #### 8、终端验证用户密码请求(管理平台的用户) ####
 * 命令名称：verify_admin_user
@@ -1325,3 +1356,197 @@
       "msg": "Success"
   }
 ```
+
+#### 24、终端上报bt文件下载进度
+
+* 命令名称: bt_task_state
+
+* client 请求/返回 body
+
+```
+{
+       "torrent_name": xxxxxxx,
+       "mac": "xxxxxxxxxx",
+       "progress": 11,
+       "state": "finished" #  "downloading", "seeding"
+}
+```
+
+* return:
+```
+  {
+      "code": 0,
+      "msg": "Success"
+  }
+```
+
+
+#### 25、终端上报本地桌面组数量
+
+* 命令名称: put_desktop_group_list
+
+* client 请求/返回 body
+
+```
+{
+       "sys_disk_uuids": "111111111111,222222222222,3333333333333",
+       "mac": "00:0C:29:51:B1:DF"
+}
+```
+
+* return:
+```
+  {
+      "code": 0,
+      "msg": "Success"
+  }
+```
+
+
+#### 26、终端获取上传进度及速度
+
+* 命令名称: bt_upload_state
+
+* client 请求/返回 body
+
+```
+{
+       "torrent_name": xxxxxxx,
+       "mac": "xxxxxxxxxx"
+}
+```
+
+* return:
+```
+  {
+      "code": 0,
+      "msg": "Success",
+      "data": {
+            "progress": 11,
+            "rate" : 10, 
+            "state": "finished" #  "downloading", "seeding"
+      }
+  }
+```
+
+
+### 27、修改教学终端配置
+
+* 命令名称: query_teach_pc
+
+* client 请求/返回 body
+    ```
+	{
+		"room_num": 2,
+	}
+
+	{
+      "code": 0,
+      "msg": "Success",
+	}
+	```
+ * Parameters
+    | 参数        | 描述                    | 必填 | 父级 | 数据类型 | 备注                                                     |
+    | :---------- | :---------------------- | :--- | :--- | :------- | :------------------------------------------------------- |
+    | is_exist    | 是否存在教师机          | 是   |      | str      | is_exist==1表示存在教师机，is_exist==0表示不存在教师机   |
+    
+    
+   
+### 28、上报终端性能信息
+
+* 命令名称：update_performance
+
+* client 请求/返回 body
+    ```json
+  	{
+		"mac": "xxxxxxxxxx",
+        "data": {
+            "name": "Sensors",
+            "count": "6",
+            "desc": [{
+                "name": "Intel Xeon E5-2680 v2 (/intelcpu/0)",
+                "count": "2",
+                "desc": [{
+                    "Name": "CPU Core",
+                    "Value": "0",
+                    "Min": "0",
+                    "Max": "0",
+                    "Path": "(/intelcpu/0/clock/1)"
+                }, {
+                    "Name": "CPU Core",
+                    "Value": "58.3333",
+                    "Min": "58.3333",
+                    "Max": "100",
+                    "Path": "(/intelcpu/0/load/1)"
+                }]
+            }, {
+                "name": "Intel Xeon E5-2680 v2 (/intelcpu/1)",
+                "count": "2",
+                "desc": [{
+                    "Name": "CPU Core",
+                    "Value": "0",
+                    "Min": "0",
+                    "Max": "0",
+                    "Path": "(/intelcpu/1/clock/1)"
+                }, {
+                    "Name": "CPU Core",
+                    "Value": "78",
+                    "Min": "78",
+                    "Max": "100",
+                    "Path": "(/intelcpu/1/load/1)"
+                }]
+            }, {
+                "name": "Generic Hard Disk (/hdd/0)",
+                "count": "1",
+                "desc": [{
+                    "Name": "Used Space",
+                    "Value": "67.753",
+                    "Min": "67.753",
+                    "Max": "67.753",
+                    "Path": "(/hdd/0/load/0)"
+                }]
+            }, {
+                "name": "Generic Hard Disk (/hdd/2)",
+                "count": "1",
+                "desc": [{
+                    "Name": "Used Space",
+                    "Value": "0.0971618",
+                    "Min": "0.0971618",
+                    "Max": "0.0971618",
+                    "Path": "(/hdd/2/load/0)"
+                }]
+            }, {
+                "name": "Unknown (/mainboard)",
+                "count": "0",
+                "desc": []
+            }, {
+                "name": "Generic Memory (/ram)",
+                "count": "3",
+                "desc": [{
+                    "Name": "Memory",
+                    "Value": "92.217",
+                    "Min": "92.217",
+                    "Max": "92.217",
+                    "Path": "(/ram/load/0)"
+                }, {
+                    "Name": "Used Memory",
+                    "Value": "7.37341",
+                    "Min": "7.37341",
+                    "Max": "7.37341",
+                    "Path": "(/ram/data/0)"
+                }, {
+                    "Name": "Available Memory",
+                    "Value": "0.622307",
+                    "Min": "0.622307",
+                    "Max": "0.622307",
+                    "Path": "(/ram/data/1)"
+                }]
+            }]
+        }
+	}
+
+	{
+      "code": 0,
+      "msg": "Success",
+	}
+    ```

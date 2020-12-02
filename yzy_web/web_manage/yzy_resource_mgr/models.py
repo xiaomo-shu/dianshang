@@ -178,8 +178,8 @@ class YzyNodeNetworkInfo(SoftDeletableModel):
 
 class YzyNodeStorages(SoftDeletableModel):
     uuid = models.CharField(unique=True, max_length=64)
-    node = models.ForeignKey(to=YzyNodes, to_field='uuid',on_delete=models.CASCADE,
-                                      related_name='yzy_node_storages', db_column='node_uuid', null=True)
+    node = models.ForeignKey(to=YzyNodes, to_field='uuid', on_delete=models.CASCADE,
+                             related_name='yzy_node_storages', db_column='node_uuid', null=True)
     path = models.CharField(max_length=64)
     role = models.CharField(max_length=64, default='')
     used = models.BigIntegerField()
@@ -316,4 +316,51 @@ class YzyBondNics(SoftDeletableModel):
     class Meta:
         # managed = False
         db_table = 'yzy_bond_nics'
+        ordering = ['id']
+
+class YzyHaInfo(SoftDeletableModel):
+    uuid = models.CharField(unique=True, max_length=64)
+    vip = models.CharField(max_length=20)
+    netmask = models.CharField(max_length=20)
+    quorum_ip = models.CharField(max_length=20)
+    sensitivity = models.IntegerField()
+    master_ip = models.CharField(max_length=20)
+    backup_ip = models.CharField(max_length=20)
+    master_nic = models.CharField(max_length=32)
+    backup_nic = models.CharField(max_length=32)
+    master_nic_uuid = models.CharField(max_length=64)
+    backup_nic_uuid = models.CharField(max_length=64)
+    master_uuid = models.CharField(max_length=64)
+    backup_uuid = models.CharField(max_length=64)
+    # ha_enable_status = models.IntegerField(default=0)
+    # ha_running_status = models.IntegerField(default=0)
+    # data_sync_status = models.IntegerField(default=0)
+    # master_net_status = models.IntegerField(default=0)
+    # backup_net_status = models.IntegerField(default=0)
+    deleted = models.IntegerField(default=0)
+    deleted_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, auto_now_add=True)
+
+    class Meta:
+        # managed = False
+        db_table = 'yzy_ha_info'
+        ordering = ['id']
+
+
+class YzyRemoteStorage(SoftDeletableModel):
+    uuid = models.CharField(unique=True, max_length=64)
+    name = models.CharField(max_length=32)
+    server = models.CharField(max_length=64)
+    role = models.CharField(max_length=64, default='')
+    used = models.BigIntegerField()
+    free = models.BigIntegerField()
+    total = models.BigIntegerField()
+    type = models.IntegerField()
+    allocated = models.BooleanField(default=0)
+    allocated_to = models.CharField(max_length=64)
+
+    class Meta:
+        # managed = False
+        db_table = 'yzy_remote_storages'
         ordering = ['id']

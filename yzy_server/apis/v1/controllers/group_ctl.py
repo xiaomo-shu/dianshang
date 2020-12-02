@@ -78,12 +78,18 @@ class GroupController(object):
         if not group:
             logger.error("group: %s not exist" % group_uuid)
             return get_error_result("GroupNotExists", name='')
+
         # 教学分组如果在使用中，不能删除
         if constants.EDUCATION_DESKTOP == group.group_type:
             desktop = db_api.get_desktop_with_all({"group_uuid": group_uuid})
             if desktop:
                 logger.error("group already in use", group_uuid)
                 return get_error_result("GroupInUse", name=group.name)
+            # 教学分组有关联课表时，不能删除
+            if db_api.get_course_schedule_with_all({"group_uuid": group_uuid}):
+                logger.error("group already in use by course_schedule", group_uuid)
+                return get_error_result("GroupInUseByCourseSchedule", name=group.name)
+
         # 个人分组删除时需要删除分组中的用户
         if constants.PERSONAL_DEKSTOP == group.group_type:
             users = db_api.get_group_user_with_all({'group_uuid': group.uuid})
@@ -348,6 +354,17 @@ class GroupUserController(object):
         :return:
         """
         logger.info("begin to export user:%s", data)
+        # 添加任务信息数据记录
+        uuid = create_uuid()
+        task_data = {
+            "uuid": uuid,
+            "task_uuid": uuid,
+            "name": constants.NAME_TYPE_MAP[6],
+            "status": constants.TASK_RUNNING,
+            "type": 6
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": uuid})
         users = data.get('users', [])
         filename = '%s.xlsx' % data['filename']
         filepath = '/root/%s' % filename
@@ -374,6 +391,8 @@ class GroupUserController(object):
             book.save(filepath)
         except Exception as e:
             logger.error("write xlsx file failed:%s", e)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("GroupUserExportError", file=filename)
         node = db_api.get_controller_node()
         bind = SERVER_CONF.addresses.get_by_default('server_bind', '')
@@ -384,6 +403,8 @@ class GroupUserController(object):
         endpoint = 'http://%s:%s' % (node.ip, port)
         url = '%s/api/v1/group/user/download?path=%s' % (endpoint, filepath)
         logger.info("export user to file %s success", filename)
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", {"url": url})
 
     def import_user(self, data):

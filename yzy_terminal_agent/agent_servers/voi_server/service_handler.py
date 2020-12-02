@@ -21,7 +21,7 @@ class ServiceHandler:
     def processor(self, tcp_socket, protocol_paket):
         logger.debug("client tcp processor: %s" % protocol_paket)
         handler_name = service_code_name.get(protocol_paket.service_code, None)
-        if not handler_name: 
+        if not handler_name:
             logger.error("service_code {} not config !!!".format(protocol_paket.service_code))
             return False
 
@@ -44,6 +44,14 @@ class ServiceHandler:
             logger.error("req_or_res {} error !!!".format(req_or_res))
             return False
 
+        # if client the same, need not new VOITerminal
+        # _terminal = voi_terminal_manager.get_client_by_mac(mac)
+
+        # if not _terminal:
+        #     token = token.decode("utf-8")
+        #     _terminal = voi_terminal_manager.get_client_by_token(token)
+        #     logger.info("***** get from client: %s, %s"% (token, _terminal))
+        #     if not _terminal:
         if not mac:
             _terminal = voi_terminal_manager.get_client_by_token(token.decode("utf-8"))
             if not _terminal:
@@ -61,7 +69,7 @@ class ServiceHandler:
         seq_id = protocol_paket.sequence_code
         ret = voi_terminal_manager.client_biz_processor(_terminal, is_req, seq_id, handler_name, message)
         if not is_req:
-            logger.debug("voi terminal response processor end")
+            logger.debug("voi terminal {}:{} response processor end".format(mac, self.client_ip))
             return True
         ret_str = json.dumps(ret)
         service_code = protocol_paket.service_code
@@ -72,10 +80,12 @@ class ServiceHandler:
                 token = ret.get("data").get("token").encode('utf-8')
         payload = ret_str.encode('utf-8')
         # payload = re.sub('[\\\]', '', json.dumps(ret_str)).encode('utf-8')
-        logger.debug("input creat_paket: payload: {}, token: {}".format(payload, token))
+        logger.debug("terminal {}:{} input creat_paket: payload: {}, token: {}".format(mac, self.client_ip,
+                                                                                       payload, token))
         _size, msg = YzyProtocol().create_paket(service_code, payload, token,
                                                 sequence_code=sequence_code, req_or_res=YzyProtocolType.RESP)
         logger.debug("_size: {}, msg: {}".format(_size, msg))
         tcp_socket.send(msg)
-        logger.debug("voi terminal tcp processor end")
+        logger.debug("voi terminal {}:{} tcp processor end".format(mac, self.client_ip))
         return True
+

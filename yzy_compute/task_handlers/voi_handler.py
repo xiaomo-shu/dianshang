@@ -59,16 +59,16 @@ class VoiProcess(object):
                             "uuid": "dfcd91e8-30ed-11ea-9764-000c2902e179",
                             "dev": "vda",
                             "boot_index": 0,
-                            "image_id": "196df26e-2b92-11ea-a62d-000c29b3ddb9",
-                            "image_version": 0,
-                            "base_path": "/opt/ssd/instances"
+                            "disk_file": "",
+                            "image_file": "",
+                            "backing_file": ""
                         },
                         {
                             "uuid": "f613f8ac-30ed-11ea-9764-000c2902e179",
                             "dev": "vdb",
                             "boot_index": -1,
                             "size": "50G",
-                            "base_path": "/opt/ssd/instances"
+                            "disk_file": ""
                         }
                         ...
                     ]
@@ -127,6 +127,7 @@ class VoiProcess(object):
                 "handler": "VoiHandler",
                 "data": {
                     "version": 1,
+                    "is_upload": False,
                     "images":[
                         {
                             "image_id": "1d07aaa0-2b92-11ea-a62d-000c29b3ddb9",
@@ -140,7 +141,8 @@ class VoiProcess(object):
         logging.info("VoiHandler, save task begin, data:%s", self.task['data'])
         images = self.task['data']['images']
         image_version = self.task['data']['version']
-        return VoiLibvirtDriver().save_template(image_version, images)
+        is_upload = self.task['data'].get("is_upload")
+        return VoiLibvirtDriver().save_template(image_version, images, is_upload)
 
     def attach_source(self):
         """
@@ -246,7 +248,8 @@ class VoiProcess(object):
                         'boot_index': 0,
                         'bus': 'virtio',
                         'type': 'disk',
-                        'base_path': '/opt/slow/instances'
+                        'disk_file': '',
+                        'backing_file': ''
                     }
                     "version": 0
                 }
@@ -446,7 +449,7 @@ class VoiProcess(object):
         :param task:
              {
                 "command": "set_ram_and_vcpu",
-                "handler": "InstanceHandler",
+                "handler": "VoiHandler",
                 "data": {
                     "instance": {
                         "uuid": "5fb01aa4-527b-400b-b9fc-8604913742b6",
@@ -458,8 +461,80 @@ class VoiProcess(object):
                 }
             }
         """
-        logging.info("InstanceHandler, set_ram_and_vcpu task begin, data:%s", self.task)
+        logging.info("VoiHandler, set_ram_and_vcpu task begin, data:%s", self.task)
         instance = self.task['data']['instance']
         ram = self.task['data'].get("ram", None)
         vcpu = self.task['data'].get("vcpu", None)
         VoiLibvirtDriver().set_vcpu_and_ram(instance, vcpu, ram)
+
+    def define_ha_voi_domain(self):
+        """
+        启用HA时，在备控上定义VOI模板的虚拟机
+        :param task:
+             {
+                "command": "define_ha_voi_domain",
+                "handler": "VoiHandler",
+                "data": {
+                    "instance": {
+                        "uuid": "5fb01aa4-527b-400b-b9fc-8604913742b6",
+                        "name": "instance1",
+                        # "base_name": "instance-00000001"
+                        # "ram": 1024,
+                        # "vcpus": 2,
+                        # "os_type": "linux"
+                        # "spice": False
+                    },
+                    "network_info": [
+                        {
+                            "fixed_ip": "203.0.113.203",
+                            "netmask": "255.255.255.0",
+                            "gateway": "203.0.113.1",
+                            "dns_server": ["114.114.114.114", "114.114.114.115"]
+                            "mac_addr": "fa:16:3e:8f:be:ff",
+                            "bridge": "brq0c364e42-1a",
+                            "port_id": "12fb86f2-b87b-44f0-b44e-38189314bdbd",
+                            "model": "virtio"
+                        },
+                        ...
+                    ],
+                    "disk_info": [
+                        {
+                            "uuid": "dfcd91e8-30ed-11ea-9764-000c2902e179",
+                            "dev": "vda",
+                            "boot_index": 0,
+                            "disk_file": "",
+                            "image_file": "",
+                            "backing_file": ""
+                        },
+                        {
+                            "uuid": "f613f8ac-30ed-11ea-9764-000c2902e179",
+                            "dev": "vdb",
+                            "boot_index": -1,
+                            "size": "50G",
+                            "disk_file": ""
+                        }
+                        ...
+                    ]
+                }
+            }
+        """
+        logging.info("VoiHandler, define_ha_voi_domain task begin, data:%s", self.task)
+        xml_file = self.task['data']['xml_file']
+        instance = self.task['data']['instance']
+        network_info = self.task['data']['network_info']
+        disk_info = self.task['data']['disk_info']
+        # power_on = self.task['data'].get('power_on', False)
+        # iso = self.task['data'].get('iso', False)
+        # configdrive = self.task['data'].get('configdrive', True)
+        power_on = False
+        configdrive = True
+        guest, _ = VoiLibvirtDriver().define_ha_voi_domain(xml_file, instance, network_info, disk_info, power_on, configdrive)
+        if guest:
+            port = VoiLibvirtDriver().get_guest_port(guest)
+            result = {
+                "state": guest.get_power_state(),
+                "vnc_port": port['vnc_port']
+            }
+        else:
+            result = None
+        return result

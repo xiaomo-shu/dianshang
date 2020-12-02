@@ -6,12 +6,14 @@ import base64
 import netaddr
 import socket
 import struct
+import random
 
 from rest_framework import serializers
 from django.utils.translation import ugettext_lazy as _
 from rest_framework.renderers import JSONRenderer
 from django.http import HttpResponse, JsonResponse
 from django.db import models
+from django.db.utils import OperationalError
 from django.db.models.query import QuerySet
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
@@ -238,10 +240,13 @@ class YzyAuthentication(BaseAuthentication):
             raise exceptions.AuthenticationFailed('auth fail.')
         try:
             _id = cache_user.id
-            user = YzyAdminUser.objects.filter(deleted=False).get(id=_id)
-            if not user.is_active:
-                logger.error("the account has been disabled:%s" % _id)
-                raise Exception("account has disabled")
+            try:
+                user = YzyAdminUser.objects.filter(deleted=False).get(id=_id)
+                if not user.is_active:
+                    logger.error("the account has been disabled:%s" % _id)
+                    raise Exception("account has disabled")
+            except OperationalError as e:
+                return cache_user, token
             role = YzyRole.objects.filter(deleted=False).get(id=user.role_id)
             if not role.enable:
                 logger.error("the account permission is disabled: %s" % role.role)
@@ -309,6 +314,87 @@ def gi_to_section(size):
 
 def bytes_to_section(_bytes):
     return int(_bytes / 512)
+
+
+class NumberToChinese:
+    """
+       阿拉伯数字转中文
+    """
+
+    def __init__(self):
+        self.result = ""
+        self.num_dict = {0: "零", 1: "一", 2: "二", 3: "三", 4: "四",
+                    5: "五", 6: "六", 7: "七", 8: "八", 9: "九"}
+        self.unit_map = [
+            ["", "十", "百", "千"],
+            ["万", "十万", "百万", "千万"],
+            ["亿", "十亿", "百亿", "千亿"],
+            ["兆", "十兆", "百兆", "千兆"]
+        ]
+        self.unit_step = ["万", "亿", "兆"]
+
+    def number_to_str_10000(self, data_str):
+        """一万以内的数转成大写"""
+        res = []
+        count = 0
+        # 倒转
+        str_rev = reversed(data_str)  # seq -- 要转换的序列，可以是 tuple, string, list 或 range。返回一个反转的迭代器。
+        for i in str_rev:
+            if i is not "0":
+                count_cos = count // 4  # 行
+                count_col = count % 4  # 列
+                res.append(self.unit_map[count_cos][count_col])
+                res.append(self.num_dict[int(i)])
+                count += 1
+            else:
+                count += 1
+                if not res:
+                    res.append("零")
+                elif res[-1] is not "零":
+                    res.append("零")
+        # 再次倒序，这次变为正序了
+        res.reverse()
+        # 去掉"一十零"这样整数的“零”
+        if res[-1] is "零" and len(res) is not 1:
+            res.pop()
+
+        return "".join(res)
+
+    def number_to_str(self, data):
+        """分段转化"""
+        assert isinstance(data, (float, int))
+        data_str = str(data)
+        len_data = len(str(data_str))
+        count_cos = len_data // 4  # 行
+        count_col = len_data - count_cos * 4  # 列
+        if count_col > 0: count_cos += 1
+
+        res = ""
+        for i in range(count_cos):
+            if i == 0:
+                data_in = data_str[-4:]
+            elif i == count_cos - 1 and count_col > 0:
+                data_in = data_str[:count_col]
+            else:
+                data_in = data_str[-(i + 1) * 4:-(i * 4)]
+            res_ = self.number_to_str_10000(data_in)
+            res = res_ + self.unit_map[i][0] + res
+        return res
+
+    def decimal_chinese(self, data):
+        assert isinstance(data, (float, int))
+        data_str = str(data)
+        if "." not in data_str:
+            res = self.number_to_str(data_str)
+        else:
+            data_str_split = data_str.split(".")
+            if len(data_str_split) is 2:
+                res_start = self.number_to_str(data_str_split[0])
+                res_end = "".join([self.num_dict[int(number)] for number in data_str_split[1]])
+                res = res_start + random.sample(["点", "."], 1)[0] + res_end
+            else:
+                res = str(data)
+        return res
 
 
 if __name__ == "__main__":

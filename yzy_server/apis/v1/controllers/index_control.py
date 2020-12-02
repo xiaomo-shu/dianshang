@@ -1,14 +1,16 @@
 import logging
 import traceback
 import datetime as dt
+import time
 import numpy as np
-from common import constants
+from yzy_server.extensions import db
 from common.utils import monitor_post, build_result
 from yzy_server.database import apis as db_api
 from common.errcode import get_error_result
 from common import constants
 from common.config import SERVER_CONF
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from yzy_server.database.models import YzyNodes
 
 
 logger = logging.getLogger(__name__)
@@ -40,9 +42,9 @@ class IndexController(object):
                     all_task.append(future)
                 for future in as_completed(all_task):
                     rep_json = future.result()
-                    logger.info("rep:%s", rep_json)
+                    logger.debug("rep:%s", rep_json)
                     if rep_json["code"] != 0:
-                        logger.error("get node:{}} resource_statis info fail".format(rep_json))
+                        logger.error("get node:{} resource_statis info fail".format(rep_json))
                         continue
                     node_name = rep_json.get("data").get("node_name", "")
                     node_uuid = rep_json.get("data").get("node_uuid", "")
@@ -82,7 +84,65 @@ class IndexController(object):
         except Exception as err:
             logger.error("err {}".format(err))
             logger.error(''.join(traceback.format_exc()))
-            return build_result("OtherError")
+            return get_error_result("OtherError")
+
+    def get_voi_data(self, data):
+        logger.info("get node voi server data")
+        # node = db_api.get_node_with_first({'id': 1})
+        node = db.session.query(YzyNodes).filter(YzyNodes.type.in_([1, 3])).first()
+        req_nic_url = '/api/v1/monitor/networkio'
+        req_data = {}
+        old_nic_ret = monitor_post(node.ip, req_nic_url, req_data)
+        node_cpu_info = {}
+        node_memory_info = {}
+        node_disk_info = {}
+        node_nic_info = {}
+        req_cpu_url = '/api/v1/monitor/cpu'
+        req_memory_url = '/api/v1/monitor/memory'
+        req_disk_url = '/api/v1/monitor/disk'
+        req_nic_url = '/api/v1/monitor/networkio'
+        try:
+            cpu_ret = monitor_post(node.ip, req_cpu_url, req_data)
+            memory_ret = monitor_post(node.ip, req_memory_url, req_data)
+            node_cpu_info['numbers'] = cpu_ret['data']['numbers']
+            node_cpu_info['utilization'] = cpu_ret['data']['utilization']
+            node_memory_info['free'] = memory_ret['data']['total'] - memory_ret['data']['available']
+            node_memory_info['total'] = memory_ret['data']['total']
+            node_memory_info['available'] = memory_ret['data']['available']
+            node_memory_info['utilization'] = memory_ret['data']['utilization']
+            disk_ret = monitor_post(node.ip, req_disk_url, req_data)
+            storages = db_api.get_node_storage_all({'node_uuid': node.uuid})
+            disk_ssd = [0, 0, 0]
+            for storage in storages:
+                if storage.type == 1 and storage.path in disk_ret["data"].keys():  # 1-ssd  2-sata
+                    logger.debug(storage.path)
+                    disk_ssd[0] += disk_ret["data"][storage.path]["total"]
+                    disk_ssd[1] += disk_ret["data"][storage.path]["used"]
+                    disk_ssd[2] += disk_ret['data'][storage.path]['free']
+            node_disk_info['ratio'] = float('%0.2f' % (disk_ssd[1] / disk_ssd[0] * 100)) if disk_ssd[0] else 0
+            node_disk_info['total'] = disk_ssd[0]
+            node_disk_info['used'] = disk_ssd[1]
+            node_disk_info['free'] = disk_ssd[2]
+            time.sleep(0.8)
+            nic_ret = monitor_post(node.ip, req_nic_url, req_data)
+            manage_network_name = db_api.get_node_manage_nic_name(node.uuid)
+            logger.debug(manage_network_name)
+            if manage_network_name and manage_network_name in nic_ret["data"].keys():
+                node_nic_info['bytes_send'] = nic_ret["data"][manage_network_name]["bytes_send"]
+                node_nic_info['bytes_recv'] = nic_ret["data"][manage_network_name]["bytes_recv"]
+                node_nic_info['bytes_send'] = node_nic_info['bytes_send'] - old_nic_ret["data"][manage_network_name]["bytes_send"]
+                node_nic_info['bytes_recv'] = node_nic_info['bytes_recv'] - old_nic_ret["data"][manage_network_name]["bytes_recv"]
+        except Exception as e:
+            logger.error("get node voi server data fail %s", e, exc_info=True)
+            return get_error_result("OtherError")
+        resp = get_error_result("Success")
+        resp['data'] = {}
+        resp["data"]["cpu_util"] = node_cpu_info
+        resp['data']['memory_util'] = node_memory_info
+        resp['data']['disk_util'] = node_disk_info
+        resp['data']['nic_util'] = node_nic_info
+        return resp
+
 
     def get_node_statistic(self):
         return get_error_result("Success")

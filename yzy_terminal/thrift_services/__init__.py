@@ -27,12 +27,13 @@ def do_status_check(app):
     #       1.1.2 if status is True:
     #           reset status to False(terminal call Ping to set True every 10 seconds)
     #    1.2 if token_status not exists, print error
-    try:
+
         # set loop_seconds must > 10
-        loop_seconds = 30
-        with app.app_context():
-            table_api = db_api.YzyTerminalTableCtrl(current_app.db)
-            while True:
+    loop_seconds = 30
+    while True:
+        try:
+            with app.app_context():
+                table_api = db_api.YzyTerminalTableCtrl(current_app.db)
                 token_client = app.token_client
                 mac_token = app.mac_token
                 token_status = app.token_status
@@ -72,10 +73,10 @@ def do_status_check(app):
                                 logging.error('mac not in yzy_terminal {} !!!'.format(mac))
                     else:
                         logging.error('token_id no key in token_status !!!')
-                time.sleep(loop_seconds)
-    except Exception as err:
-        logging.error(err)
-        logging.error(''.join(traceback.format_exc()))
+        except Exception as err:
+            logging.error(err)
+            logging.error(''.join(traceback.format_exc()))
+        time.sleep(loop_seconds)
 
 
 def thrift_connect_handler(server, connect_handler, app):

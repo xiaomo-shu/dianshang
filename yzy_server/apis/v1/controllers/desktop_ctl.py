@@ -5,6 +5,7 @@ import logging
 import random
 import string
 import os
+import json
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -16,6 +17,8 @@ from common.config import FileOp
 from common.errcode import get_error_result
 from common.utils import create_uuid, compute_post, find_ips, terminal_post
 from yzy_server.extensions import db
+from yzy_server.utils import sync_func_to_ha_backup, sync_compute_post_to_ha_backup_with_network_info
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +77,29 @@ class BaseController(object):
         used_ips = template_ips + education_ips + personal_ips + voi_ips
         return list(set(used_ips))
 
-    def create_disk_info(self, data, version, sys_base, data_base, disk_generate=True):
+    def _get_instance_storage_path(self, node_uuid=None):
+        if not node_uuid:
+            node = db_api.get_controller_node()
+            node_uuid = node.uuid
+        instance_sys = db_api.get_instance_sys_storage(node_uuid)
+        instance_data = db_api.get_instance_data_storage(node_uuid)
+        if not (instance_sys and instance_data):
+            return None, None
+        sys_path = os.path.join(instance_sys.path, 'instances')
+        data_path = os.path.join(instance_data.path, 'datas')
+        return {"path": sys_path, "uuid": instance_sys.uuid, 'free': instance_sys.free}, \
+               {"path": data_path, "uuid": instance_data.uuid, 'free': instance_data.free}
+
+    def _get_storage_path_with_uuid(self, sys_storage, data_storage):
+        template_sys = db_api.get_node_storage_first({"uuid": sys_storage})
+        template_data = db_api.get_node_storage_first({"uuid": data_storage})
+        if not (template_sys and template_data):
+            return None, None
+        sys_path = os.path.join(template_sys.path, 'instances')
+        data_path = os.path.join(template_data.path, 'datas')
+        return sys_path, data_path
+
+    def create_disk_info(self, data, sys_base, data_base, image_path, disk_generate=True):
         """
         生成模板的磁盘信息
         :return:
@@ -83,16 +108,16 @@ class BaseController(object):
                     "uuid": "dfcd91e8-30ed-11ea-9764-000c2902e179",
                     "dev": "vda",
                     "boot_index": 0,
-                    "image_id": "196df26e-2b92-11ea-a62d-000c29b3ddb9",
-                    "image_version": 0,
-                    "base_path": "/opt/ssd/instances"
+                    "size": "50G",
+                    "disk_file": "",
+                    "backing_file": ""
                 },
                 {
                     "uuid": "f613f8ac-30ed-11ea-9764-000c2902e179",
                     "dev": "vdb",
                     "boot_index": -1,
                     "size": "50G",
-                    "base_path": "/opt/ssd/datas"
+                    "disk_file": ""
                 },
                 ...
             ]
@@ -103,16 +128,17 @@ class BaseController(object):
             for disk in data['data_disks']:
                 _disk_list.append(disk)
             return _disk_list
+        sys_base_dir = os.path.join(sys_base, data['uuid'])
+        data_base_dir = os.path.join(data_base, data['uuid'])
         system_disk_dict = {
             "uuid": data['system_disk']['uuid'],
-            # "bus": data['system_disk'].get("bus", "virtio"),
-            "bus": "virtio",
+            # "bus": data['system_disk'].get('bus', 'virtio'),
+            "bus": 'virtio',
             "dev": "vda",
             "boot_index": 0,
             "size": "%dG" % int(data['system_disk']['size']),
-            "image_id": data['system_disk'].get('image_id', ''),
-            "image_version": version,
-            "base_path": sys_base
+            "disk_file": "%s/%s%s" % (sys_base_dir, constants.DISK_FILE_PREFIX, data['system_disk']['uuid']),
+            "backing_file": image_path
         }
         _disk_list.append(system_disk_dict)
 
@@ -122,11 +148,13 @@ class BaseController(object):
             _d = dict()
             inx = int(disk["inx"])
             size = int(disk["size"])
-            _d["uuid"] = create_uuid()
+            disk_uuid = create_uuid()
+            _d["uuid"] = disk_uuid
+            _d["bus"] = disk.get('bus', 'virtio')
             _d["boot_index"] = inx + 1
             _d["size"] = "%dG" % size
             _d["dev"] = "vd%s" % zm[inx + 1]
-            _d['base_path'] = data_base
+            _d['disk_file'] = "%s/%s%s" % (data_base_dir, constants.DISK_FILE_PREFIX, disk_uuid)
             _disk_list.append(_d)
         logger.debug("get disk info")
         return _disk_list
@@ -262,7 +290,7 @@ class BaseController(object):
     #     time.sleep(0.5)
     #     return True
 
-    def create_instance(self, desktop, subnet, instance, version, sys_base, data_base, power_on=True, terminal=False):
+    def create_instance(self, desktop, subnet, instance, sys_base, data_base, power_on=True, terminal=False):
         try:
             node = db_api.get_node_by_uuid(instance.host_uuid)
             # 如果是教学桌面，需要查看同一分组下的桌面组对应的桌面有没有开启
@@ -280,7 +308,7 @@ class BaseController(object):
                                     timeout = 0 if item.sys_restore else 70
                                     try:
                                         self._stop_instance(node.ip, {"uuid": exist.uuid, "name": exist.name}, timeout)
-                                        exist.spice_token = ''
+                                        # exist.spice_token = ''
                                     except:
                                         pass
                                 # 清掉其他桌面的终端信息
@@ -302,7 +330,7 @@ class BaseController(object):
                     }
                 }
                 rep_json = compute_post(node.ip, command_data)
-                if not rep_json.get('data', {}).get('result', True):
+                if rep_json.get('code') != 0 or not rep_json.get('data', {}).get('result', True):
                     logger.error("can not allocate memory")
                     return get_error_result("ResourceAllocateError")
 
@@ -312,7 +340,8 @@ class BaseController(object):
                 "name": instance.name,
                 "vcpu": desktop.vcpu,
                 "ram": desktop.ram,
-                "os_type": desktop.os_type
+                "os_type": desktop.os_type,
+                "spice_token": instance.spice_token
             }
             instance_info = self._get_instance_info(info)
             net = db_api.get_interface_by_network(desktop.network_uuid, node.uuid)
@@ -329,7 +358,8 @@ class BaseController(object):
             network_info = self.create_network_info(vif_info, instance.port_uuid, instance.mac,
                                                     subnet, instance.ipaddr)
             devices = db_api.get_devices_by_instance(instance.uuid)
-            disk_info = self._get_instance_disk(devices, version, sys_base, data_base,
+            ins_sys, ins_data = self._get_storage_path_with_uuid(instance.sys_storage, instance.data_storage)
+            disk_info = self._get_instance_disk(instance.uuid, devices, sys_base, data_base, ins_sys, ins_data,
                                                 desktop.sys_restore, desktop.data_restore)
             rep_json = self._create_instance(node.ip, instance_info, network_info, disk_info, power_on)
             if power_on and rep_json['code'] == 0:
@@ -350,11 +380,12 @@ class BaseController(object):
             if rep_json['data'].get("spice_token"):
                 instance.up_time = datetime.utcnow()
                 logger.info("add spice token info, uuid:%s, name:%s", instance.uuid, instance.name)
-                instance.spice_token = rep_json["data"]["spice_token"]
+                # instance.spice_token = rep_json["data"]["spice_token"]
             instance.spice_port = rep_json["data"]['spice_port']
         else:
             instance.status = constants.STATUS_INACTIVE
         instance.message = ''
+        instance.up_time = datetime.utcnow()
         instance.soft_update()
         time.sleep(0.5)
         logger.info("create instance return, spice_token:%s, spice_port:%s", instance.spice_token, instance.spice_port)
@@ -394,10 +425,11 @@ class BaseController(object):
                 os.remove(file_path)
             except:
                 pass
+            terminal_mac = instance.terminal_mac
             instance.status = constants.STATUS_INACTIVE
             instance.spice_port = ''
             instance.spice_link = 0
-            instance.spice_token = ''
+            # instance.spice_token = ''
             instance.message = ''
             instance.terminal_mac = None
             instance.soft_update()
@@ -413,7 +445,7 @@ class BaseController(object):
                 "port": instance.spice_port,
                 "token": instance.spice_token,
                 "os_type": desktop.os_type,
-                "terminal_mac": instance.terminal_mac
+                "terminal_mac": terminal_mac
             }
             # 通知终端管理服务
             t = threading.Thread(target=self.notice_terminal_instance_close, args=(data,))
@@ -450,7 +482,7 @@ class BaseController(object):
         logger.info("delete instance %s end", instance.uuid)
         return deleted
 
-    def reboot_instance(self, desktop, subnet, instance, version, sys_base, data_base):
+    def reboot_instance(self, desktop, subnet, instance, sys_base, data_base):
         try:
             # 如果是教学桌面，需要查看同一分组下的桌面组对应的桌面有没有开启
             if constants.EDUCATION_DESKTOP == instance.classify:
@@ -468,7 +500,8 @@ class BaseController(object):
                 "name": instance.name,
                 "vcpu": desktop.vcpu,
                 "ram": desktop.ram,
-                "os_type": desktop.os_type
+                "os_type": desktop.os_type,
+                "spice_token": instance.spice_token
             }
             node = db_api.get_node_by_uuid(instance.host_uuid)
             instance_info = self._get_instance_info(info)
@@ -488,7 +521,8 @@ class BaseController(object):
             network_info = self.create_network_info(vif_info, instance.port_uuid, instance.mac,
                                                     subnet, instance.ipaddr)
             devices = db_api.get_devices_by_instance(instance.uuid)
-            disk_info = self._get_instance_disk(devices, version, sys_base, data_base,
+            ins_sys, ins_data = self._get_storage_path_with_uuid(instance.sys_storage, instance.data_storage)
+            disk_info = self._get_instance_disk(instance.uuid, devices, sys_base, data_base, ins_sys, ins_data,
                                                 desktop.sys_restore, desktop.data_restore)
             rep_json = self._reboot_restore_instance(node.ip, instance_info, network_info, disk_info,
                                                      desktop.sys_restore, desktop.data_restore)
@@ -508,24 +542,27 @@ class BaseController(object):
         instance.up_time = datetime.utcnow()
         if rep_json['data'].get("spice_token"):
             logger.info("add spice token, uuid:%s, name:%s", instance.uuid, instance.name)
-            instance.spice_token = rep_json["data"]["spice_token"]
+            # instance.spice_token = rep_json["data"]["spice_token"]
         instance.spice_port = rep_json["data"]['spice_port']
         instance.soft_update()
         logger.info("reboot instance success, uuid:%s, spice_token:%s", instance.uuid, instance.spice_token)
         return get_error_result()
 
-    def _get_instance_disk(self, devices, version, sys_base, data_base, sys_restore=True, data_restore=True):
+    def _get_instance_disk(self, uuid, devices, sys_base, data_base,
+                           ins_sys, ins_data, sys_restore=True, data_restore=True):
         disks = list()
         for device in devices:
+            base_dir = sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base
+            ins_base = ins_sys if constants.IMAGE_TYPE_SYSTEM == device.type else ins_data
             info = {
                 "uuid": device.uuid,
                 "dev": device.device_name,
-                "image_id": device.image_id,
-                "image_version": version,
                 "boot_index": device.boot_index,
                 "bus": device.disk_bus,
                 "type": device.source_device,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == device.type else data_base,
+                "disk_file": os.path.join(ins_base, uuid, constants.DISK_FILE_PREFIX + device.uuid),
+                "backing_file": os.path.join(base_dir, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                             constants.IMAGE_FILE_PREFIX % str(1) + device.image_id),
                 "restore": sys_restore if constants.IMAGE_TYPE_SYSTEM == device.type else data_restore
             }
             disks.append(info)
@@ -587,7 +624,7 @@ class BaseController(object):
         elif os_type == "linux":
             _os_type = "linux"
 
-        spice_token = create_uuid()
+        # spice_token = create_uuid()
 
         instance_info = {
             "uuid": data['uuid'],
@@ -596,7 +633,7 @@ class BaseController(object):
             "ram": float(data['ram']) * 1024,
             "vcpus": data['vcpu'],
             "os_type": _os_type,
-            "spice_token": spice_token
+            "spice_token": data.get('spice_token')
         }
         # 模板不开启spice端口
         if voi or template:
@@ -605,34 +642,23 @@ class BaseController(object):
         logger.debug("get instance info, uuid:%s, name:%s", instance_info['uuid'], instance_info['name'])
         return instance_info
 
-    def _get_instance_storage_path(self):
-        instance_sys = db_api.get_instance_sys_storage()
-        instance_data = db_api.get_instance_data_storage()
-        if not instance_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = instance_sys.path
-        sys_path = os.path.join(sys_base, 'instances')
-        if not instance_data:
-            data_base = constants.DEFAULT_DATA_PATH
-        else:
-            data_base = instance_data.path
-        data_path = os.path.join(data_base, 'datas')
-        return sys_path, data_path
-
     def _start_desktop(self, desktop, subnet):
+        template = db_api.get_instance_template(desktop.template_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+
         logger.info("get intances in desktop:%s", desktop.name)
         instances = db_api.get_instance_by_desktop(desktop.uuid)
-        version = db_api.get_template_version(desktop.template_uuid)
-        sys_base, data_base = self._get_instance_storage_path()
         all_task = list()
         failed_num = 0
         success_num = 0
         with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
             for instance in instances:
                 logger.info("start instance %s thread", instance.uuid)
-                future = executor.submit(self.create_instance, desktop, subnet, instance, version, sys_base,
-                                         data_base)
+                future = executor.submit(self.create_instance, desktop, subnet, instance, sys_base, data_base)
                 all_task.append(future)
             for future in as_completed(all_task):
                 result = future.result()
@@ -771,17 +797,22 @@ class BaseController(object):
         """
         重启操作，根据盘的还原属性进行还原，即相当于关机再开机
         """
+        template = db_api.get_instance_template(desktop.template_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+
         logger.info("get intances in desktop:%s", desktop.name)
         instances = db_api.get_instance_by_desktop(desktop.uuid)
-        version = db_api.get_template_version(desktop.template_uuid)
-        sys_base, data_base = self._get_instance_storage_path()
         all_task = list()
         failed_num = 0
         success_num = 0
         with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
             for instance in instances:
                 logger.info("reboot instance %s thread", instance.uuid)
-                future = executor.submit(self.reboot_instance, desktop, subnet, instance, version, sys_base, data_base)
+                future = executor.submit(self.reboot_instance, desktop, subnet, instance, sys_base, data_base)
                 all_task.append(future)
             for future in as_completed(all_task):
                 result = future.result()
@@ -801,15 +832,19 @@ class BaseController(object):
         """
         删除桌面组，不管什么类型桌面，全部删除
         """
+        template = db_api.get_instance_template(desktop.template_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
+
         logger.info("get intances in desktop:%s", desktop.name)
         instances = db_api.get_instance_by_desktop(desktop.uuid)
-        sys_base, data_base = self._get_instance_storage_path()
         all_task = list()
         failed_num = 0
         success_num = 0
         with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
             for instance in instances:
                 logger.info("delete instance %s thread", instance.uuid)
+                sys_base, data_base = self._get_storage_path_with_uuid(instance.sys_storage, instance.data_storage)
                 future = executor.submit(self.delete_instance, instance, sys_base, data_base)
                 all_task.append(future)
             for future in as_completed(all_task):
@@ -856,6 +891,10 @@ class BaseController(object):
                 "network_info": network_info
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_compute_post_to_ha_backup_with_network_info(command_data)
+
         logger.info("start instance %s in node %s", instance_info['uuid'], ipaddr)
         rep_json = compute_post(ipaddr, command_data)
         if rep_json.get("code", -1) != 0:
@@ -917,8 +956,12 @@ class BaseController(object):
                 "timeout": timeout
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data, timeout=150)
+
         logger.info("stop instance %s in node %s", instance_info['uuid'], ipaddr)
-        rep_json = compute_post(ipaddr, command_data)
+        rep_json = compute_post(ipaddr, command_data, timeout=150)
         if rep_json.get("code", -1) != 0:
             logger.error("stop instance failed, node:%s, error:%s", ipaddr, rep_json.get('data'))
             message = rep_json['data'] if rep_json.get('data', None) else rep_json['msg']
@@ -950,8 +993,12 @@ class BaseController(object):
                 "instance": instance_info
             }
         }
+
+        # 如果启用了HA，在备控上也同步执行对VOI模板的操作，未启用则不同步
+        sync_func_to_ha_backup(compute_post, command_data, timeout=180)
+
         logger.info("soft reboot instance %s in node %s", instance_info['uuid'], ipaddr)
-        rep_json = compute_post(ipaddr, command_data)
+        rep_json = compute_post(ipaddr, command_data, timeout=180)
         if rep_json.get("code", -1) != 0:
             logger.error("soft reboot instance failed, node:%s, error:%s", ipaddr, rep_json.get('data'))
             message = rep_json['data'] if rep_json.get('data', None) else rep_json['msg']
@@ -970,7 +1017,7 @@ class BaseController(object):
             }
         }
         logger.info("hard reboot instance %s in node %s", instance_info['uuid'], ipaddr)
-        rep_json = compute_post(ipaddr, command_data)
+        rep_json = compute_post(ipaddr, command_data, timeout=180)
         if rep_json.get("code", -1) != 0:
             logger.error("hard reboot instance failed, node:%s, error:%s", ipaddr, rep_json.get('data'))
             message = rep_json['data'] if rep_json.get('data', None) else rep_json['msg']
@@ -1081,6 +1128,10 @@ class DesktopController(BaseController):
             if len(unused_ips) < data['instance_num']:
                 return get_error_result("IPNotEnough")
 
+        sys_base, data_base = self._get_instance_storage_path()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
+
         # add desktop
         last_desktop = db_api.get_desktop_order_by_order_num({})
         desktop_uuid = create_uuid()
@@ -1130,13 +1181,16 @@ class DesktopController(BaseController):
                     "name": instance_name,
                     "host_uuid": node.uuid,
                     "desktop_uuid": desktop_uuid,
+                    "sys_storage": sys_base['uuid'],
+                    "data_storage": data_base['uuid'],
                     "classify": 1,
                     "terminal_id": terminal_id,
                     "status": constants.STATUS_INACTIVE,
                     # 不同桌面组相同终端序号的IP时分配是一样的
                     "ipaddr": '' if subnet.enable_dhcp else generate_ips(unused_ips, self.education_used_ips),
                     "mac": mac,
-                    "port_uuid": create_uuid()
+                    "port_uuid": create_uuid(),
+                    "spice_token": create_uuid()
                 }
                 terminal_id += 1
                 instances.append(instance_value)
@@ -1206,7 +1260,8 @@ class DesktopController(BaseController):
         if not desktop:
             logger.error("desktop %s not exist", desktop_uuid)
             return get_error_result("DesktopNotExist", name="")
-        return self._stop_desktop(desktop, hard=hard)
+        ret = self._stop_desktop(desktop, hard=hard)
+        return ret
 
     def stop_desktop_for_node(self, desktop_uuid, node_uuid):
         """
@@ -1234,8 +1289,12 @@ class DesktopController(BaseController):
         if not subnet:
             logger.error("subnet: %s not exist", desktop.subnet_uuid)
             return get_error_result("SubnetNotExist")
-
-        return self._reboot_desktop(desktop, subnet)
+        desktop.active = False
+        desktop.soft_update()
+        ret = self._reboot_desktop(desktop, subnet)
+        desktop.active = True
+        desktop.soft_update()
+        return ret
 
     def delete_desktop(self, desktop_uuid):
         """
@@ -1245,6 +1304,9 @@ class DesktopController(BaseController):
         if not desktop:
             logger.error("desktop %s not exist", desktop_uuid)
             return get_error_result("DesktopNotExist", name="")
+        # 教学桌面组有关联课表时，不能删除
+        if db_api.get_course_with_all({"desktop_uuid": desktop_uuid}):
+            return get_error_result("DesktopInUseByCourseSchedule", name=desktop.name)
         return self._delete_desktop(desktop)
 
     def update_desktop(self, data):
@@ -1264,6 +1326,19 @@ class DesktopController(BaseController):
             logger.error("desktop %s not exist", desktop_uuid)
             return get_error_result("DesktopNotExist", name="")
         try:
+            # 如果修改了教学桌面组的名称，需要对应修改yzy_course_template.desktops字段
+            if data['value']['name'] != desktop.name:
+                course_template_uuid_list = db_api.get_distinct_course_template_uuids_by_course(
+                    {"desktop_uuid": desktop_uuid})
+                for ct_uuid in course_template_uuid_list:
+                    ct_obj = db_api.get_course_template_with_first({"uuid": ct_uuid[0]})
+                    if ct_obj:
+                        d_map = json.loads(ct_obj.desktops)
+                        if desktop_uuid in d_map.keys():
+                            d_map[desktop_uuid] = data['value']['name']
+                            ct_obj.desktops = json.dumps(d_map)
+                            logger.info("update desktop name[%s] to course_template[%s]" % (data['value']['name'], ct_uuid[0]))
+
             desktop.update(data['value'])
             desktop.soft_update()
         except Exception as e:
@@ -1343,6 +1418,9 @@ class PersonalDesktopController(BaseController):
                 logger.info("get unused ips")
                 if len(unused_ips) < data['instance_num']:
                     return get_error_result("IPNotEnough")
+        sys_base, data_base = self._get_instance_storage_path()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
         try:
             # add personal desktop
             last_desktop = db_api.get_personal_desktop_order_by_order_num({})
@@ -1405,13 +1483,16 @@ class PersonalDesktopController(BaseController):
                         "name": instance_name,
                         "host_uuid": node.uuid,
                         "desktop_uuid": desktop_uuid,
+                        "sys_storage": sys_base['uuid'],
+                        "data_storage": data_base['uuid'],
                         "classify": 2,
                         "status": constants.STATUS_INACTIVE,
                         "ipaddr": generate_ips(unused_ips, self.used_ips) if data.get('subnet_uuid', '') else '',
                         "mac": mac,
                         "port_uuid": create_uuid(),
                         "user_uuid": self.get_static_user(instance_name, data.get('allocates', []))
-                        if constants.STATIC_DESKTOP == data['desktop_type'] else ''
+                        if constants.STATIC_DESKTOP == data['desktop_type'] else '',
+                        "spice_token": create_uuid()
                     }
                     instances.append(instance_value)
                     postfix_start += 1
@@ -1495,15 +1576,19 @@ class PersonalDesktopController(BaseController):
         if not desktop:
             logger.error("desktop %s not exist", desktop_uuid)
             return get_error_result("DesktopNotExist", name="")
+        template = db_api.get_instance_template(desktop.template_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
+
         logger.info("get intances in desktop:%s", desktop.name)
         instances = db_api.get_instance_by_desktop(desktop.uuid)
-        sys_base, data_base = self._get_instance_storage_path()
         all_task = list()
         failed_num = 0
         success_num = 0
         with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
             for instance in instances:
                 logger.info("delete instance %s thread", instance.uuid)
+                sys_base, data_base = self._get_storage_path_with_uuid(instance.sys_storage, instance.data_storage)
                 future = executor.submit(self.delete_instance, instance, sys_base, data_base)
                 all_task.append(future)
             for future in as_completed(all_task):
@@ -1609,60 +1694,92 @@ class InstanceController(BaseController):
         # else:
         #     desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
         desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
-        if not desktop:
-            desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+        # 添加任务信息数据记录
+        uuid = create_uuid()
+        task_data = {
+            "uuid": uuid,
+            "task_uuid": data['desktop_uuid'],
+            "name": constants.NAME_TYPE_MAP[3],
+            "status": constants.TASK_RUNNING,
+            "type": 3
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": uuid})
+        try:
             if not desktop:
-                logger.error("desktop %s not exist", data['desktop_uuid'])
-                return get_error_result("DesktopNotExist", name="")
-        subnet = None
-        if desktop.subnet_uuid:
-            subnet = db_api.get_subnet_by_uuid(desktop.subnet_uuid)
-            if not subnet:
-                logger.error("subnet: %s not exist", desktop.subnet_uuid)
-                return get_error_result("SubnetNotExist")
+                desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+                if not desktop:
+                    logger.error("desktop %s not exist", data['desktop_uuid'])
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
+                    return get_error_result("DesktopNotExist", name="")
+            subnet = None
+            if desktop.subnet_uuid:
+                subnet = db_api.get_subnet_by_uuid(desktop.subnet_uuid)
+                if not subnet:
+                    logger.error("subnet: %s not exist", desktop.subnet_uuid)
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
+                    return get_error_result("SubnetNotExist")
+            template = db_api.get_instance_template(desktop.template_uuid)
+            if not template:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("TemplateNotExist")
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+            if not (sys_base and data_base):
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("InstancePathNotExist")
 
-        logger.info("get intances in desktop:%s", desktop.name)
-        instances = list()
-        failed_num = 0
-        success_num = 0
-        result = db_api.get_instance_by_desktop(data['desktop_uuid'])
-        version = db_api.get_template_version(desktop.template_uuid)
-        for ins in data['instances']:
-            for item in result:
-                if item.uuid == ins['uuid']:
-                    instances.append(item)
-                    break
-            else:
-                logger.error("the instance %s not exists", ins['uuid'])
-                failed_num += 1
-        # 并发启动
-        sys_base, data_base = self._get_instance_storage_path()
-        all_task = list()
-        with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
-            for instance in instances:
-                logger.info("start instance %s thread", instance.uuid)
-                future = executor.submit(self.create_instance, desktop, subnet, instance, version, sys_base,
-                                         data_base)
-                all_task.append(future)
-            for future in as_completed(all_task):
-                result = future.result()
-                if result.get('code') != 0:
+            logger.info("get intances in desktop:%s", desktop.name)
+            instances = list()
+            failed_num = 0
+            success_num = 0
+            result = db_api.get_instance_by_desktop(data['desktop_uuid'])
+            for ins in data['instances']:
+                for item in result:
+                    if item.uuid == ins['uuid']:
+                        instances.append(item)
+                        break
+                else:
+                    logger.error("the instance %s not exists", ins['uuid'])
                     failed_num += 1
-                else:
-                    success_num += 1
-            time.sleep(1)
+            # 并发启动
+            all_task = list()
+            with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
+                for instance in instances:
+                    logger.info("start instance %s thread", instance.uuid)
+                    future = executor.submit(self.create_instance, desktop, subnet, instance, sys_base, data_base)
+                    all_task.append(future)
+                for future in as_completed(all_task):
+                    result = future.result()
+                    if result.get('code') != 0:
+                        failed_num += 1
+                    else:
+                        success_num += 1
+                time.sleep(1)
 
-        db.session.flush()
-        logger.info("start instances end, success:%s, failed:%s", success_num, failed_num)
-        if 1 == len(data['instances']) and 1 == failed_num:
-            # ret = get_error_result("InstanceStartFail", name="")
-            # ret['msg'] = result['data'] if result.get('data') else result.get('msg')
-            if result.get("data"):
-                if "Cannot allocate memory" in result['data']:
-                    result['msg'] += "，内存不足"
-                else:
-                    result['msg'] += "，%s" % result["data"]
-            return result
+            db.session.flush()
+            logger.info("start instances end, success:%s, failed:%s", success_num, failed_num)
+            if 1 == len(data['instances']) and 1 == failed_num:
+                # ret = get_error_result("InstanceStartFail", name="")
+                # ret['msg'] = result['data'] if result.get('data') else result.get('msg')
+                if result.get("data"):
+                    if "Cannot allocate memory" in result['data']:
+                        result['msg'] += "，内存不足"
+                    else:
+                        result['msg'] += "，%s" % result["data"]
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return result
+        except Exception as e:
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            logger.error("instance start fail: %s", e)
+            return get_error_result("OtherError")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", data={"failed_num": failed_num, "success_num": success_num})
 
     def stop_instances(self, data, hard=False, timeout=None):
@@ -1691,45 +1808,68 @@ class InstanceController(BaseController):
         #     desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
         # else:
         #     desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
-        personal = False
-        desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
-        if not desktop:
-            desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+        # 添加任务信息数据记录
+        uuid = create_uuid()
+        task_data = {
+            "uuid": uuid,
+            "task_uuid": data['desktop_uuid'],
+            "name": constants.NAME_TYPE_MAP[4],
+            "status": constants.TASK_RUNNING,
+            "type": 4
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": uuid})
+        try:
+            personal = False
+            desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
             if not desktop:
-                logger.error("desktop %s not exist", data['desktop_uuid'])
-                return get_error_result("DesktopNotExist", name="")
-            personal = True
+                desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+                if not desktop:
+                    logger.error("desktop %s not exist", data['desktop_uuid'])
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
+                    return get_error_result("DesktopNotExist", name="")
+                personal = True
 
-        logger.info("get instances in desktop:%s", desktop.name)
-        instances = list()
-        failed_num = 0
-        success_num = 0
-        result = db_api.get_instance_by_desktop(data['desktop_uuid'])
-        for ins in data['instances']:
-            for item in result:
-                if item.uuid == ins['uuid']:
-                    instances.append(item)
-                    break
-            else:
-                logger.error("the instance %s not exists", ins['uuid'])
-                failed_num += 1
-        all_task = list()
-        with ThreadPoolExecutor(max_workers=2*constants.MAX_THREADS) as executor:
-            for instance in instances:
-                logger.info("stop instance %s thread", instance.uuid)
-                future = executor.submit(self.stop_instance, instance, desktop, personal, hard, timeout)
-                all_task.append(future)
-            for future in as_completed(all_task):
-                result = future.result()
-                if not result:
-                    failed_num += 1
+            logger.info("get instances in desktop:%s", desktop.name)
+            instances = list()
+            failed_num = 0
+            success_num = 0
+            result = db_api.get_instance_by_desktop(data['desktop_uuid'])
+            for ins in data['instances']:
+                for item in result:
+                    if item.uuid == ins['uuid']:
+                        instances.append(item)
+                        break
                 else:
-                    success_num += 1
+                    logger.error("the instance %s not exists", ins['uuid'])
+                    failed_num += 1
+            all_task = list()
+            with ThreadPoolExecutor(max_workers=2*constants.MAX_THREADS) as executor:
+                for instance in instances:
+                    logger.info("stop instance %s thread", instance.uuid)
+                    future = executor.submit(self.stop_instance, instance, desktop, personal, hard, timeout)
+                    all_task.append(future)
+                for future in as_completed(all_task):
+                    result = future.result()
+                    if not result:
+                        failed_num += 1
+                    else:
+                        success_num += 1
 
-        db.session.flush()
-        logger.info("stop instances end, success:%s, failed:%s", success_num, failed_num)
-        if 1 == len(data['instances']) and 1 == failed_num:
-            return get_error_result("InstanceStopFail", name="")
+            db.session.flush()
+            logger.info("stop instances end, success:%s, failed:%s", success_num, failed_num)
+            if 1 == len(data['instances']) and 1 == failed_num:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("InstanceStopFail", name="")
+        except Exception as e:
+            logger.error("instance stop fail :%s", e)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("OtherError")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", data={"failed_num": failed_num, "success_num": success_num})
 
     def delete_instances(self, data):
@@ -1772,6 +1912,9 @@ class InstanceController(BaseController):
                 return get_error_result("InstanceNotExist", name="")
             if constants.STATUS_ACTIVE == result.status:
                 return get_error_result("PersonalInstanceActive", name=result.name)
+        template = db_api.get_instance_template(desktop.template_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
 
         logger.info("get intances in desktop:%s", desktop.name)
         instances = list()
@@ -1787,7 +1930,6 @@ class InstanceController(BaseController):
                 logger.error("the instance %s not exists", ins['uuid'])
                 failed_num += 1
 
-        sys_base, data_base = self._get_instance_storage_path()
         all_task = list()
         with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
             for instance in instances:
@@ -1796,6 +1938,7 @@ class InstanceController(BaseController):
                     failed_num += 1
                     continue
                 logger.info("delete instance %s thread", instance.uuid)
+                sys_base, data_base = self._get_storage_path_with_uuid(instance.sys_storage, instance.data_storage)
                 future = executor.submit(self.delete_instance, instance, sys_base, data_base)
                 all_task.append(future)
             for future in as_completed(all_task):
@@ -1816,52 +1959,86 @@ class InstanceController(BaseController):
         #     desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
         # else:
         #     desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
-        desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
-        if not desktop:
-            desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+        # 添加任务信息数据记录
+        uuid = create_uuid()
+        task_data = {
+            "uuid": uuid,
+            "task_uuid": data['desktop_uuid'],
+            "name": constants.NAME_TYPE_MAP[5],
+            "status": constants.TASK_RUNNING,
+            "type": 5
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": uuid})
+        try:
+            desktop = db_api.get_desktop_by_uuid(data['desktop_uuid'])
             if not desktop:
-                logger.error("desktop %s not exist", data['desktop_uuid'])
-                return get_error_result("DesktopNotExist", name="")
-        subnet = None
-        if desktop.subnet_uuid:
-            subnet = db_api.get_subnet_by_uuid(desktop.subnet_uuid)
-            if not subnet:
-                logger.error("subnet: %s not exist", desktop.subnet_uuid)
-                return get_error_result("SubnetNotExist")
+                desktop = db_api.get_personal_desktop_with_first({'uuid': data['desktop_uuid']})
+                if not desktop:
+                    logger.error("desktop %s not exist", data['desktop_uuid'])
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
+                    return get_error_result("DesktopNotExist", name="")
+            subnet = None
+            if desktop.subnet_uuid:
+                subnet = db_api.get_subnet_by_uuid(desktop.subnet_uuid)
+                if not subnet:
+                    logger.error("subnet: %s not exist", desktop.subnet_uuid)
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
+                    return get_error_result("SubnetNotExist")
 
-        logger.info("get intances in desktop:%s", desktop.name)
-        instances = list()
-        failed_num = 0
-        success_num = 0
-        result = db_api.get_instance_by_desktop(data['desktop_uuid'])
-        version = db_api.get_template_version(desktop.template_uuid)
-        for ins in data['instances']:
-            for item in result:
-                if item.uuid == ins['uuid']:
-                    instances.append(item)
-                    break
-            else:
-                logger.error("the instance %s not exists", ins['uuid'])
-                failed_num += 1
-        sys_base, data_base = self._get_instance_storage_path()
-        all_task = list()
-        with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
-            for instance in instances:
-                logger.info("reboot instance %s thread", instance.uuid)
-                future = executor.submit(self.reboot_instance, desktop, subnet, instance, version, sys_base, data_base)
-                all_task.append(future)
-            for future in as_completed(all_task):
-                result = future.result()
-                if result.get('code') != 0:
-                    failed_num += 1
+            template = db_api.get_instance_template(desktop.template_uuid)
+            if not template:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("TemplateNotExist")
+            sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+            if not (sys_base and data_base):
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("InstancePathNotExist")
+
+            logger.info("get intances in desktop:%s", desktop.name)
+            instances = list()
+            failed_num = 0
+            success_num = 0
+            result = db_api.get_instance_by_desktop(data['desktop_uuid'])
+            for ins in data['instances']:
+                for item in result:
+                    if item.uuid == ins['uuid']:
+                        instances.append(item)
+                        break
                 else:
-                    success_num += 1
-        db.session.flush()
-        logger.info("reboot instances end, success:%s, failed:%s", success_num, failed_num)
-        if 1 == len(data['instances']) and 1 == failed_num:
-            ret = get_error_result("InstanceRebootFail", name="")
-            ret['msg'] = result['data'] if result.get('data') else result.get('msg')
-            return ret
+                    logger.error("the instance %s not exists", ins['uuid'])
+                    failed_num += 1
+            all_task = list()
+            with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
+                for instance in instances:
+                    logger.info("reboot instance %s thread", instance.uuid)
+                    future = executor.submit(self.reboot_instance, desktop, subnet, instance, sys_base, data_base)
+                    all_task.append(future)
+                for future in as_completed(all_task):
+                    result = future.result()
+                    if result.get('code') != 0:
+                        failed_num += 1
+                    else:
+                        success_num += 1
+            db.session.flush()
+            logger.info("reboot instances end, success:%s, failed:%s", success_num, failed_num)
+            if 1 == len(data['instances']) and 1 == failed_num:
+                ret = get_error_result("InstanceRebootFail", name="")
+                ret['msg'] = result['data'] if result.get('data') else result.get('msg')
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return ret
+        except Exception as e:
+            logger.error("instance reboot fail:%s", e)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("OtherError")
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", data={"failed_num": failed_num, "success_num": success_num})
 
     def check_education_available_ips(self, subnet, instance_num, origin_num):
@@ -1905,7 +2082,9 @@ class InstanceController(BaseController):
         unused_ips = self.check_education_available_ips(subnet, data['instance_num'], desktop.instance_num)
         if not unused_ips:
             return get_error_result("IPNotEnough")
-
+        sys_base, data_base = self._get_instance_storage_path()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
         # add instance
         template = db_api.get_instance_template(desktop.template_uuid)
         self.used_macs = self.get_used_macs()
@@ -1920,12 +2099,10 @@ class InstanceController(BaseController):
         deleted_count = 0
         recovers = list()
         recoverd = list()
-        for item in origin_instances:
-            if item.deleted:
-                item.deleted = False
-                item.mac = generate_mac(self.used_macs)
+        for ins in origin_instances:
+            if ins.deleted:
                 # deleted_instance.host_uuid = node.uuid
-                recovers.append(item)
+                recovers.append(ins)
                 deleted_count += 1
                 if deleted_count == data['instance_num']:
                     # 添加的数量小于等于曾经删除的数量情况，取要添加的个数桌面进行恢复
@@ -1934,7 +2111,11 @@ class InstanceController(BaseController):
                         for j in range(num):
                             for item in recovers:
                                 if item not in recoverd:
+                                    item.deleted = False
+                                    item.mac = generate_mac(self.used_macs)
                                     item.host_uuid = node.uuid
+                                    item.sys_storage = sys_base['uuid']
+                                    item.data_storage = data_base['uuid']
                                     item.status = constants.STATUS_INACTIVE
                                     # devices = db_api.get_devices_by_instance(template.uuid)
                                     devices = db_api.get_devices_with_all({"instance_uuid": template.uuid})
@@ -1952,8 +2133,9 @@ class InstanceController(BaseController):
                                         disks.append(info)
                                     item.soft_update()
                                     db_api.insert_with_many(models.YzyInstanceDeviceInfo, disks)
-                                    logger.info("recover instance, uuid:%s, name:%s", item.uuid, item.name)
+                                    logger.info("recover instance, uuid:%s, name:%s, ipaddr:%s", item.uuid, item.name, ipaddr)
                                     recoverd.append(item)
+                                    break
                     logger.info("get the deleted instance is larger than add num")
                     desktop.instance_num += data['instance_num']
                     desktop.soft_update()
@@ -1993,6 +2175,8 @@ class InstanceController(BaseController):
                     "name": instance_name,
                     "classify": 1,
                     "desktop_uuid": desktop.uuid,
+                    "sys_storage": sys_base['uuid'],
+                    "data_storage": data_base['uuid'],
                     "terminal_id": last_terminal,
                     "status": constants.STATUS_INACTIVE,
                     "ipaddr": generate_ips(unused_ips, self.education_used_ips) if desktop.subnet_uuid else '',
@@ -2021,7 +2205,12 @@ class InstanceController(BaseController):
                 for j in range(num):
                     if recovers:
                         item = recovers.pop()
+                        item.deleted = False
+                        item.mac = generate_mac(self.used_macs)
                         item.host_uuid = node.uuid
+                        item.sys_storage = sys_base['uuid']
+                        item.data_storage = data_base['uuid']
+                        item.status = constants.STATUS_INACTIVE
                         disks = list()
                         for disk in devices:
                             info = {
@@ -2088,6 +2277,9 @@ class InstanceController(BaseController):
             unused_ips = self.check_available_ips(subnet, start_ip, data['instance_num'])
             if not unused_ips:
                 return get_error_result("IPNotEnough")
+        sys_base, data_base = self._get_instance_storage_path()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
 
         # add instance
         template = db_api.get_instance_template(desktop.template_uuid)
@@ -2120,6 +2312,8 @@ class InstanceController(BaseController):
                     "host_uuid": node.uuid,
                     "classify": 2,
                     "desktop_uuid": desktop.uuid,
+                    "sys_storage": sys_base['uuid'],
+                    "data_storage": data_base['uuid'],
                     "status": constants.STATUS_INACTIVE,
                     "ipaddr": generate_ips(unused_ips, self.used_ips) if desktop.subnet_uuid else '',
                     "mac": mac,
@@ -2258,10 +2452,12 @@ class InstanceController(BaseController):
             if not subnet:
                 logger.error("subnet: %s not exist", desktop.subnet_uuid)
                 return get_error_result("SubnetNotExist")
+        template = db_api.get_instance_template(desktop.template_uuid)
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
 
-        version = db_api.get_template_version(desktop.template_uuid)
-        sys_base, data_base = self._get_instance_storage_path()
-        return self.create_instance(desktop, subnet, instance, version, sys_base, data_base)
+        return self.create_instance(desktop, subnet, instance, sys_base, data_base)
 
     def get_console(self, data):
         uuid = data.get("uuid", '')

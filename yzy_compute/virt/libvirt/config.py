@@ -974,6 +974,40 @@ class LibvirtConfigGuestInput(LibvirtConfigGuestDevice):
         self.bus = xmldoc.get('bus')
 
 
+class LibvirtConfigGuestController(LibvirtConfigGuestDevice):
+
+    def __init__(self, **kwargs):
+        super(LibvirtConfigGuestController,
+              self).__init__(root_name="controller", **kwargs)
+
+        self.type = None
+        self.index = None
+        self.model = None
+        self.driver_iommu = False
+
+    def format_dom(self):
+        controller = super(LibvirtConfigGuestController, self).format_dom()
+        controller.set("type", self.type)
+
+        if self.index is not None:
+            controller.set("index", str(self.index))
+
+        if self.model:
+            controller.set("model", str(self.model))
+
+        if self.driver_iommu:
+            controller.append(etree.Element("driver", iommu="on"))
+
+        return controller
+
+
+class LibvirtConfigGuestUSBHostController(LibvirtConfigGuestController):
+
+    def __init__(self, **kwargs):
+        super(LibvirtConfigGuestUSBHostController, self).__init__(**kwargs)
+        self.type = 'usb'
+
+
 class LibvirtConfigGuestRedirect(LibvirtConfigGuestDevice):
 
     def __init__(self, **kwargs):
@@ -1094,7 +1128,7 @@ class LibvirtConfigGuestSound(LibvirtConfigGuestDevice):
         super(LibvirtConfigGuestSound, self).__init__(root_name="sound",
                                                       **kwargs)
 
-        self.model = 'ich6'
+        self.model = 'ac97'
 
     def format_dom(self):
         dev = super(LibvirtConfigGuestSound, self).format_dom()
@@ -1173,6 +1207,13 @@ class LibvirtConfigGuestFeatureAPIC(LibvirtConfigGuestFeature):
                                                             **kwargs)
 
 
+class LibvirtConfigGuestFeaturePAE(LibvirtConfigGuestFeature):
+
+    def __init__(self, **kwargs):
+        super(LibvirtConfigGuestFeaturePAE, self).__init__("pae",
+                                                           **kwargs)
+
+
 class LibvirtConfigGuestFeatureVmport(LibvirtConfigGuestFeature):
 
     def __init__(self, **kwargs):
@@ -1200,6 +1241,8 @@ class LibvirtConfigGuestFeatureHyperV(LibvirtConfigGuestFeature):
         self.relaxed = False
         self.vapic = False
         self.spinlocks = False
+        self.synic = True
+        self.stimer = True
         self.spinlock_retries = self.MIN_SPINLOCK_RETRIES
         self.vendorid_spoof = False
         self.vendorid = self.SPOOFED_VENDOR_ID
@@ -1217,6 +1260,10 @@ class LibvirtConfigGuestFeatureHyperV(LibvirtConfigGuestFeature):
         if self.vendorid_spoof:
             root.append(etree.Element("vendor_id", state="on",
                                       value=self.vendorid))
+        if self.synic:
+            root.append(etree.Element("synic", state="on"))
+        if self.stimer:
+            root.append(etree.Element("stimer", state="on"))
 
         return root
 

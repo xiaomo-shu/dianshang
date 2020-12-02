@@ -69,7 +69,11 @@ def run():
         def load(self):
             return self.application
 
-    app.logger.setLevel(app.config.get('LOG_LEVEL', logging.INFO))
+    # 重启pid存在导致启动失败的问题
+    pid_file = app.config.get('PID_FILE', 'yzy_server.pid')
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+
     service_config = {
         'bind': app.config.get('SERVER_BIND', '0.0.0.0:%d' % constants.SERVER_DEFAULT_PORT),
         'workers': app.config.get('WORKERS', cpu_count() * 2 + 1),
@@ -77,8 +81,8 @@ def run():
         'worker_connections': app.config.get('WORKER_CONNECTIONS', 10000),
         'backlog': app.config.get('BACKLOG', 2048),
         'timeout': app.config.get('TIMEOUT', 300),
-        'loglevel': app.config.get('LOG_LEVEL', 'info'),
-        'pidfile': app.config.get('PID_FILE', 'yzy_server.pid'),
+        # 'pidfile': app.config.get('PID_FILE', 'yzy_server.pid'),
+        'pidfile': pid_file,
         "preload_app": True
     }
 
@@ -137,5 +141,12 @@ if __name__ == '__main__':
     # 在init_app时检查了数据库状态，打开了数据库连接，在fork子进程之前，销毁已经打开的数据库连接
     # 在fork模式下，如果不销毁，子进程和父进程拥有相同的地址空间，则子进程会有和父进程相同的文件描述符
     # 而数据库连接是tcp连接，也就是socket,在linux下就是一个文件,两个进程同时写一个连接会导致数据混乱
-    db.get_engine(app=app).dispose()
+    # db.get_engine(app=app).dispose()
+    engine = db.get_engine(app=app)
+    engine.dispose()
+
+    # dispose方法会弃用旧池，新建一个新池（空的），而新池默认_pre_ping=False
+    # HA功能会重启mariadb服务，导致池内原有连接失效，需要设置_pre_ping=True避免从池中签出已失效的连接
+    engine.pool._pre_ping = True
+
     manager.run()

@@ -51,6 +51,16 @@ class TerminalController(object):
             redis.rds.hdel(constants.PARALELL_QUEUE, terminal_id)
             raise e
 
+    @retry(stop_max_attempt_number=3, wait_fixed=2000, wait_incrementing_increment=1000)
+    def check_auth_num(self, redis, size):
+        try:
+            res = redis.incr(constants.AUTH_SIZE_KEY)
+            logger.info("current auth size:%s, total:%s", res, size)
+            if res > size:
+                raise Exception("auth size is %s, expired", )
+        except Exception as e:
+            raise e
+
     def auth_session(self, func):
         # 判断登录session
         @functools.wraps(func)
@@ -259,6 +269,8 @@ class TerminalController(object):
 
     def edu_desktop_groups(self, data):
         """ 教学桌面组列表 """
+        logger.debug("get education desktop info, terminal_id:%s, terminal_ip:%s",
+                     data.get("terminal_id", 0), data.get("terminal_ip", ""))
         terminal_id = data.get("terminal_id", 0)
         if not terminal_id:
             logger.error("terminal id param error: %s"% terminal_id)
@@ -282,10 +294,11 @@ class TerminalController(object):
             logger.error("terminal group not exist: %s"% terminal_ip)
             return build_result("Success", _groups)
 
+        logger.debug("get education desktop terminal ip: %s, terminal_group: %s", terminal_ip, terminal_group.uuid)
         terminal_id = int(terminal_id)
         # 查找分组
         desktops = db_api.get_desktop_with_all({"group_uuid": terminal_group.uuid, "active": True})
-
+        logger.debug("get education desktop terminal ip: %s, desktops_len: %s", terminal_ip, len(desktops))
         for desktop in desktops:
             # 判断是否总数大于序号
             if desktop.instance_num < terminal_id:
@@ -302,7 +315,7 @@ class TerminalController(object):
             _groups.append(_d)
 
         _groups = sorted(_groups, key=lambda _groups: _groups['order_num'])
-        logger.debug("edu terminal desktop group list: %s" % _groups)
+        logger.debug("edu terminal_ip %s desktop group list: %s" % (terminal_ip, _groups))
         return build_result("Success", _groups)
 
     def person_instance(self, data):
@@ -312,8 +325,9 @@ class TerminalController(object):
         desktop_name = data.get("desktop_name", "")
         auth_info = LicenseManager().get_auth_info()
         # 0-过期 1-宽限期 2-试用期 3-正式版
-        if 0 == auth_info.get('auth_type') or (1 == auth_info.get('auth_type') and auth_info.get('delay_days', 0) == 0)\
-                or (2 == auth_info.get('auth_type') and auth_info.get('expire_time', 0) == 0):
+        # if 0 == auth_info.get('auth_type') or (1 == auth_info.get('auth_type') and auth_info.get('delay_days', 0) == 0)\
+        #         or (2 == auth_info.get('auth_type') and auth_info.get('expire_time', 0) == 0):
+        if auth_info.get("auth_type", 0) == 0:
             return build_result("AuthExpired")
         if self.get_links_num() >= auth_info.get('vdi_size', 0):
             return build_result("AuthSizeExpired")
@@ -400,9 +414,10 @@ class TerminalController(object):
         #     logger.error("person instance start error: not subnet %s" % desktop_group.subnet_uuid)
         #     return build_result("TerminalPersonStartError")
         # 启动桌面
-        version = db_api.get_template_version(desktop_group.template_uuid)
         controller = BaseController()
-        sys_base, data_base = controller._get_instance_storage_path()
+        template = db_api.get_instance_template(desktop_group.template_uuid)
+        sys_base, data_base = controller._get_storage_path_with_uuid(template.sys_storage,
+                                                                     template.data_storage)
         if desktop_group.desktop_type == constants.RANDOM_DESKTOP:
             # 随机桌面
             instance = db_api.get_instance_by_desktop_first_alloc(desktop_uuid)
@@ -410,7 +425,7 @@ class TerminalController(object):
                 logger.error("person desktop not instance to alloc")
                 return build_result("TerminalPersonInstanceNotAlloc")
 
-            ret = controller.create_instance(desktop_group, subnet, instance, version, sys_base, data_base)
+            ret = controller.create_instance(desktop_group, subnet, instance, sys_base, data_base)
             if ret.get('code') != 0:
                 logger.error("person instance start error: %s", instance.uuid)
                 return build_result("TerminalPersonStartError")
@@ -448,12 +463,13 @@ class TerminalController(object):
                 logger.error("static person desktop not bind: desktop group %s, user %s", desktop_uuid, user.uuid)
                 return build_result("TerminalPersonInstanceNotAlloc")
             instance = static_instance_bind
-            ret = controller.create_instance(desktop_group, subnet, instance, version, sys_base, data_base)
+            ret = controller.create_instance(desktop_group, subnet, instance, sys_base, data_base)
             if ret.get('code') != 0:
                 logger.error("person instance start error: %s", instance.uuid)
                 return build_result("TerminalPersonStartError")
             logger.info("static person instance start succes: %s", instance.uuid)
             instance.link_time = datetime.now()
+            instance.terminal_mac = user.mac
             instance.spice_link = 1
             instance.soft_update()
         data = {
@@ -536,6 +552,9 @@ class TerminalController(object):
                 ports_status = monitor_post(k, "/api/v1/monitor/port_status", {"ports": ports})
             else:
                 ports_status = {}
+            if ports_status.get('code', -1) != 0:
+                logger.error("from node %s get port status:%s", k, ports_status)
+                continue
             logger.info("from node %s get port status:%s", k, ports_status)
             for port, link in ports_status.get("data", {}).items():
                 if link:
@@ -545,18 +564,28 @@ class TerminalController(object):
 
     def education_instance(self, data):
         """教学桌面详情"""
+        logger.info("open the education desktop, desktop_uuid:%s, terminal_id:%s, terminal_ip:%s",
+                    data.get("desktop_uuid", ""), data.get("terminal_id", 0), data.get("ip", ""))
         desktop_uuid = data.get("desktop_uuid", "")
         terminal_id = data.get("terminal_id", 0)
         terminal_mac = data.get("mac", "")
         terminal_ip = data.get("ip", "")
         auth_info = LicenseManager().get_auth_info()
         # 0-过期 1-宽限期 2-试用期 3-正式版
-        if 0 == auth_info.get('auth_type') or (1 == auth_info.get('auth_type') and auth_info.get('delay_days', 0) == 0)\
-                or (2 == auth_info.get('auth_type') and auth_info.get('expire_time', 0) == 0):
+        # if 0 == auth_info.get('auth_type') or (1 == auth_info.get('auth_type') and auth_info.get('delay_days', 0) == 0)\
+        #         or (2 == auth_info.get('auth_type') and auth_info.get('expire_time', 0) == 0):
+        if auth_info.get("auth_type", 0) == 0:
             return build_result("AuthExpired")
-        # links = db_api.get_instance_with_all({"spice_link": True})
         if self.get_links_num() >= auth_info.get('vdi_size', 0):
             return build_result("AuthSizeExpired")
+        # # 授权个数控制，使用redis，配合后台监控线程每8s重置一下已连接个数
+        # redis = yzyRedis()
+        # try:
+        #     redis.init_app()
+        #     self.check_auth_num(redis, auth_info.get('vdi_size', 0))
+        # except Exception as e:
+        #     logger.error("check auth error:%s", e)
+        #     return build_result("AuthSizeExpired")
         # 根据桌面组和终端序号查到桌面
         instance = db_api.get_instance_with_first({"desktop_uuid": desktop_uuid, "terminal_id": terminal_id,
                                                    "classify": constants.EDUCATION_DESKTOP})
@@ -570,10 +599,10 @@ class TerminalController(object):
             logger.error("person instance start error: not subnet %s", desktop_group.subnet_uuid)
             return build_result("TerminalEducationStartError")
 
-        redis = yzyRedis()
         host_ip = instance.host.ip
         try:
             # 并发数控制
+            redis = yzyRedis()
             try:
                 redis.init_app()
                 self.check_concurrency(redis, host_ip, terminal_id, desktop_group.ram)
@@ -590,17 +619,19 @@ class TerminalController(object):
                 if ret.get(host_ip, {}).get(str(spice_port)):
                     online = True
 
-            contraller = BaseController()
-            version = db_api.get_template_version(desktop_group.template_uuid)
-            sys_base, data_base = contraller._get_instance_storage_path()
+            controller = BaseController()
+            template = db_api.get_instance_template(desktop_group.template_uuid)
+            sys_base, data_base = controller._get_storage_path_with_uuid(template.sys_storage,
+                                                                         template.data_storage)
             logger.info("get education instance, desktop_name:%s, terminal_id:%s, terminal_mac:%s",
                         desktop_group.name, terminal_id, terminal_mac)
             if online:
                 # spice_port有链接并且有terminal_mac才是真正有终端连接
-                if instance.terminal_mac and instance.terminal_mac == terminal_mac:
+                # spice_port有链接(但实际SPICE_PORT被其他桌面复用), instance.terminal_mac 为空的情况，是需要正常启动
+                if (not instance.terminal_mac) or (instance.terminal_mac and instance.terminal_mac == terminal_mac):
                     # mac相同，关闭当前开启
-                    ins_ret = contraller.create_instance(desktop_group, subnet,
-                                                         instance, version, sys_base, data_base, terminal=True)
+                    ins_ret = controller.create_instance(desktop_group, subnet, instance,
+                                                         sys_base, data_base, terminal=True)
                     if ins_ret.get('code') != 0:
                         logger.error("education instance start error: %s", instance.uuid)
                         return build_result("TerminalEducationStartError")
@@ -613,8 +644,8 @@ class TerminalController(object):
             else:
                 # 不在线
                 logger.info("eduction instance not link, uuid:%s, name:%s", instance.uuid, instance.name)
-                ins_ret = contraller.create_instance(desktop_group, subnet,
-                                                     instance, version, sys_base, data_base, terminal=True)
+                ins_ret = controller.create_instance(desktop_group, subnet, instance,
+                                                     sys_base, data_base, terminal=True)
                 if ins_ret.get('code') != 0:
                     logger.error("education instance start error: %s", instance.uuid)
                     return build_result("TerminalEducationStartError")
@@ -633,6 +664,9 @@ class TerminalController(object):
                 "os_type": desktop_group.os_type
             }
             return build_result("Success", data)
+        except Exception as e:
+            logger.exception("open education desktop error:%s", e)
+            raise e
         finally:
             try:
                 redis.rds.hdel(constants.PARALELL_QUEUE, terminal_id)

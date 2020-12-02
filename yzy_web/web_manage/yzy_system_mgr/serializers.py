@@ -124,3 +124,21 @@ class YzyCrontabDetailSerializer(DateTimeFieldMix):
         if task:
             status = task.status
         return status
+
+
+class YzyAuthSerializer(DateTimeFieldMix):
+
+    class Meta:
+        model = YzyAuth
+        fields = '__all__'
+
+
+class YzyTaskSerializer(DateTimeFieldMix):
+    # create_time = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = YzyTask
+        fields = ['name', 'status', 'created_at']
+
+    # def get_create_time(self, obj):
+    #     pass

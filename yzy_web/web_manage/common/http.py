@@ -3,6 +3,7 @@ import logging
 import socket
 import hashlib
 import requests
+import subprocess
 import six
 import six.moves.urllib.parse as urlparse
 
@@ -350,7 +351,7 @@ def voi_terminal_post(url, data):
     else:
         port = constants.VOI_TERMINAL_DEFAULT_PORT
     endpoint = 'http://127.0.0.1:%s' % port
-    http_client = HTTPClient(endpoint, timeout=10)
+    http_client = HTTPClient(endpoint, timeout=30)
     headers = {
         "Content-Type": "application/json"
     }
@@ -381,3 +382,17 @@ def monitor_post(ipaddr, url, data):
         ret['data'] = "监控服务连接失败"
         return ret
     return body
+
+
+def subprocess_server_post(url, data):
+    bind = SERVER_CONF.addresses.get_by_default('server_bind', '')
+    if bind:
+        port = bind.split(':')[-1]
+    else:
+        port = constants.COMPUTE_DEFAULT_PORT
+
+    exec_str = """curl -i -X POST -H Content-type:application/json -d"""
+    exec_cmd = exec_str.split(" ")
+    exec_cmd.append(json.dumps(data))
+    exec_cmd.append('http://127.0.0.1:%s/api/v1/%s' % (str(port), url.lstrip('/')))
+    subprocess.Popen(exec_cmd)

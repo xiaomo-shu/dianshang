@@ -97,7 +97,7 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
   |uefi_num|int| uefi开机数|
   |windows_num|int| windows开机数|
   |linux_num|int| 维护模式开机数|
-  |u_linux_num|int| 部署模式开机数|  
+  |u_linux_num|int| 部署模式开机数|
   |close_num|int|关机数|
   ||||
   | results | object|当前页的数据数组|
@@ -430,6 +430,12 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
                 },
                 "program":{
                     "server_ip":"172.16.1.33"
+                },
+                "teach_config": {
+                    "room_num": 1,
+                    "teach_pc_ip": "192.168.2.23",
+                    "top_server_ip": "172.16.1.33",
+                    "channel_num": 10
                 }
             }
         }
@@ -718,7 +724,9 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
           "netmask": "255.255.255.0",
           "gateway": "172.16.1.254",
           "dns1": "8.8.8.8",
-          "dns2": "114.114.114.114"
+          "dns2": "114.114.114.114",
+		  "group_uuid": "23423423423kkl242kl34234l23kl",
+		  "modify_ip_method": "dhcp"
        }
     }
     ```
@@ -888,7 +896,7 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
   |uefi_num|int| uefi开机数|
   |windows_num|int| windows开机数|
   |linux_num|int| 维护模式开机数|
-  |u_linux_num|int| 部署模式开机数|  
+  |u_linux_num|int| 部署模式开机数|
   |close_num| int| 关机数|
   
 
@@ -1255,4 +1263,150 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
     	"code": 0,
     	"msg": "成功"
     }
+    ```
+    
+    
+ ### 22、VOI终端列表拉取接口 ###
+
+
+* URL
+
+	`api/v1.0/voi/terminal_mgr/terminal_upgrade/`
+
+* Method
+
+	**GET** 请求，**body** 无 **json** 格式
+  
+    - 示例
+  
+    ```
+     http://172.16.1.6:50004/api/v1.0/voi/terminal_mgr/terminal_upgrade/
+    ``
+    ```
+
+
+* Returns
+
+  | Name |Type|Description|
+  | :------- | :----| :-----|
+  |code|int | 返回码 |
+  |msg |str | 请求返回的具体信息 |
+  |data | object| 根据需求返回相应数据 |
+  | name | str | 文件包名称|
+  |uuid| str|文件包uuid |
+  |platform| str| 平台 |
+  |os |str|系统类型linux,windows|
+  |version|str|版本|
+  |count|str|升级数|
+  |upload_at|str|上传时间|
+  | path | str| 升级包路径|
+  
+
+
+  - 示例：
+
+    ```json
+    
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": [
+            {
+                "id": 4,
+                "deleted_at": null,
+                "updated_at": "2020-08-19 09:30:22",
+                "created_at": "2020-08-18 09:30:18",
+                "count": 0,
+                "terminal_count": 0,
+                "upload_at": "2020-08-19 09:30:07",
+                "deleted": 0,
+                "uuid": "816dcaa1-3e06-4ce5-b5a0-a1b079990f97",
+                "name": "windows端",
+                "platform": "VOI",
+                "os": "windows",
+                "version": "",
+                "size": 0.0,
+                "path": ""
+            },
+            {
+                "id": 9,
+                "deleted_at": null,
+                "updated_at": "2020-08-20 09:15:00",
+                "created_at": "2020-08-20 09:11:23",
+                "count": 0,
+                "terminal_count": 0,
+                "upload_at": "2020-08-20 09:15:00",
+                "deleted": 0,
+                "uuid": "2d6819c9-6e10-4629-b33a-9eef2e48a341",
+                "name": "VOI_os_2.0.0.rar",
+                "platform": "VOI",
+                "os": "os",
+                "version": "2.0.0",
+                "size": 6.1,
+                "path": "/opt/terminal/soft/VOI_os_2.0.0.rar"
+            }
+        ]
+    }
+    ```
+    
+    
+### 23、VOI终端升级包上传 ###
+
+
+* URL
+
+	`/api/v1.0/voi/terminal_mgr/terminal_upgrade/`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+  
+
+* Parameters
+	
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | file  | object    | 上传包文件对象 (文件名：VOI_操作系统_版本.zip)  |
+  
+  
+  
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+  | name | str | 文件包名称|
+  |uuid| str|文件包uuid |
+  |platform| str| 平台 |
+  |os |str|系统类型linux,windows|
+  |version|str|版本|
+  |count|str|升级数|
+  |upload_at|str|上传时间|
+  | path | str| 升级包路径|
+
+  - 示例：
+
+    ```json
+  {
+    "code": 0,
+    "msg": "成功",
+    "data": {
+        "id": 10,
+        "uuid": "cfc7ee64-04b2-418e-948d-0bd476214ec6",
+        "name": "VOI_OS_2.0.0.1.zip",
+        "platform": "VOI",
+        "os": "OS",
+        "version": "2.0.0.1",
+        "path": "/opt/terminal/soft/VOI_OS_2.0.0.1.zip",
+        "size": 0.0,
+        "upload_at": "2020-08-21T01:46:54.407261+08:00",
+        "deleted": 0,
+        "deleted_at": null,
+        "created_at": "2020-08-21 01:46:54",
+        "updated_at": null
+    }
+}
     ```

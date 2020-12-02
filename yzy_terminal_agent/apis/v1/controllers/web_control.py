@@ -5,12 +5,15 @@ import datetime as dt
 import json
 import traceback
 import copy
+import shutil
+import zipfile
 import logging
 from threading import Timer
 from functools import wraps
 from flask import current_app
 import common.errcode as errcode
 from yzy_terminal_agent.database import api as db_api
+from common import constants
 from common.utils import build_result, is_ip_addr, is_netmask, create_uuid
 from common.config import SERVER_CONF
 from yzy_terminal_agent.ext_libs.redis_pub_sub import RedisMessageCenter
@@ -276,16 +279,23 @@ class WebTaskHandler(object):
             batch_no = self.create_batch_no()
             json_data = data.get("data")
             mac_list = json_data.get("mac_list")
+            params = {
+                "batch_no": batch_no
+            }
             for mac in mac_list.split(','):
                 send_data = {
                     "cmd": "clear_all_desktop",
                     "data": {
                         "mac": mac,
-                        "params": {
-                            "batch_no": batch_no
-                        }
+                        "params": params
                     }
                 }
+                # 清除掉所有下发任务
+                table_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+                qry_terminals = table_api.select_terminal_all_task(terminal_mac=mac)
+                if qry_terminals:
+                    table_api.delete_tasks(qry_terminals)
+
                 msg = json.dumps(send_data)
                 self.msg_center.public(msg)
             if self.rds.ping():
@@ -293,6 +303,7 @@ class WebTaskHandler(object):
                 insert_data = {
                     "send_macs": mac_list,
                     "confirm_macs": "",
+                    "params": params,
                     'datetime': dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 self.rds.set(redis_key, json.dumps(insert_data).encode('utf-8'), self.rds.live_seconds)
@@ -363,9 +374,36 @@ class WebTaskHandler(object):
             table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
             for mac in mac_list.split(','):
                 terminal_uuid = table_api.delete_terminal_by_mac(mac)
-                # 清除终端与桌面组的bind关系
-                bind_table_api = db_api.YzyVoiTerminalToDesktopsCtrl(current_app.db)
-                bind_table_api.delete_all_bind_by_terminal(terminal_uuid)
+                if terminal_uuid:
+                    # 清除终端与桌面组的bind关系
+                    bind_table_api = db_api.YzyVoiTerminalToDesktopsCtrl(current_app.db)
+                    bind_table_api.delete_all_bind_by_terminal(terminal_uuid)
+                    send_data = {
+                        "cmd": "delete",
+                        "data": {
+                            "mac": mac,
+                            "params": {
+                                "batch_no": batch_no
+                            }
+                        }
+                    }
+                    task_table_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+                    qry_terminals = task_table_api.select_terminal_all_task(terminal_mac=mac)
+                    if qry_terminals:
+                        task_table_api.delete_tasks(qry_terminals)
+                    msg = json.dumps(send_data)
+                    self.msg_center.public(msg)
+            if self.rds.ping():
+                redis_key = 'voi_command:delete:{}'.format(batch_no)
+                insert_data = {
+                    "send_macs": mac_list,
+                    "confirm_macs": "",
+                    'datetime': dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                self.rds.set(redis_key, json.dumps(insert_data).encode('utf-8'), self.rds.live_seconds)
+            else:
+                logger.debug('Redis server error')
+                resp = errcode.get_error_result(error="RedisServerError")
             logger.info("delete terminal : %s success"% mac_list)
             return resp
         except Exception as err:
@@ -544,12 +582,80 @@ class WebTaskHandler(object):
             return resp
 
     @timefn
+    def cancel_p_to_v(self, data):
+        """
+         p2v取消上传
+        {
+                "image_name": "92f9d1ba-cb4a-41ba-971a-618f9e306571"
+                "progress": 11,
+                "status": 1,
+                "mac": "AA:50:CC:C0:DD:08",
+                "storage": "opt",
+        }
+
+        * return:
+          {
+              "code": 0,
+              "msg": "Success"
+          }
+        """
+        try:
+            resp = errcode.get_error_result()
+            batch_no = self.create_batch_no()
+            json_data = data.get("data")
+            mac_list = json_data.get("mac_list")
+            for mac in mac_list.split(','):
+                send_data = {
+                    "cmd": "cancel_p_to_v",
+                    "data": {
+                        "mac": mac,
+                        "params": {
+                            "batch_no": batch_no
+                        }
+                    }
+                }
+                msg = json.dumps(send_data)
+                self.msg_center.public(msg)
+
+            if self.rds.ping():
+                redis_key = 'voi_command:clear_all_desktop:{}'.format(batch_no)
+                insert_data = {
+                    "send_macs": mac_list,
+                    "confirm_macs": "",
+                    'datetime': dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                self.rds.set(redis_key, json.dumps(insert_data).encode('utf-8'), self.rds.live_seconds)
+            else:
+                logger.debug('Redis server error')
+                resp = errcode.get_error_result(error="RedisServerError")
+            return resp
+        except Exception as err:
+            logger.error(err)
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError")
+            return resp
+
+    @timefn
     def modify_ip(self, data):
         try:
             logger.info('input data: {}'.format(data))
             resp = errcode.get_error_result()
             json_data = data.get("data")
+            modify_ip_method = json_data.get("modify_ip_method")
             group_uuid = json_data.get("group_uuid", "")
+            if modify_ip_method == "dhcp":
+                table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+                terminals = table_api.select_terminal_by_group_uuid(group_uuid)
+                for term in terminals:
+                    values = {
+                        'mac': term.mac,
+                        'conf_version': str(int(term.conf_version) + 1),
+                        'is_dhcp': 1
+                    }
+                    table_api.update_terminal_by_mac(**values)
+                logger.debug("Modify group's %s terminals to dhcp success." % group_uuid)
+                return resp
+
             mac_list = json_data.get("mac_list").split(',')
             ip_list = json_data.get("to_ip_list").split(',')
             gateway = json_data.get("gateway")
@@ -649,6 +755,13 @@ class WebTaskHandler(object):
             show_desktop_type = json_data.get("mode").get("show_desktop_type")
             auto_desktop = json_data.get("mode").get("auto_desktop")
             server_ip = json_data.get("program").get("server_ip")
+            screen_resolution = json_data.get("program").get("screen_resolution")
+            # teach config info
+            room_num = json_data.get("teach_config").get("room_num")
+            teach_pc_ip = json_data.get("teach_config").get("teach_pc_ip")
+            top_server_ip = json_data.get("teach_config").get("top_server_ip")
+            channel_num = json_data.get("teach_config").get("channel_num")
+
 
             set_mode_info = {
                 'show_desktop_type': show_desktop_type,
@@ -656,6 +769,13 @@ class WebTaskHandler(object):
             }
             set_program_info = {
                 'server_ip': server_ip,
+                "screen_resolution": screen_resolution
+            }
+            set_teach_config = {
+                'room_num': room_num,
+                'teach_pc_ip': teach_pc_ip,
+                'top_server_ip': top_server_ip,
+                'channel_num': channel_num
             }
             # yzy_voi_terminal update setup_conf
             for mac in mac_list:
@@ -665,7 +785,10 @@ class WebTaskHandler(object):
                     setup_info = json.loads(qry_terminal.setup_info)
                     logger.debug(setup_info)
                     setup_info['mode'] = set_mode_info
-                    setup_info['program'] = set_program_info
+                    setup_info['program'].update(set_program_info)
+                    teach_config = setup_info.get('teach_config', {})
+                    teach_config.update(set_teach_config)
+                    setup_info['teach_config'] = teach_config
                     terminal_values = {
                         'mac': qry_terminal.mac,
                         'conf_version': str(int(qry_terminal.conf_version) + 1),
@@ -681,7 +804,8 @@ class WebTaskHandler(object):
                                 "batch_no": batch_no,
                                 'conf_version': int(qry_terminal.conf_version) + 1,
                                 "mode": set_mode_info,
-                                "program": set_program_info
+                                "program": set_program_info,
+                                "teach_config": set_teach_config
                             }
                         }
                     }
@@ -985,6 +1109,11 @@ class WebTaskHandler(object):
                                 desktop["desktop_dns1"] = terminal_to_desktop.desktop_dns1
                                 desktop["desktop_dns2"] = terminal_to_desktop.desktop_dns2
 
+                    table_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+                    qry_terminals = table_api.select_terminal_all_task(terminal_mac=mac)
+                    if qry_terminals:
+                        table_api.delete_tasks(qry_terminals)
+
                     batch_no = self.create_batch_no()
                     params = {
                         "batch_no": batch_no,
@@ -1043,6 +1172,10 @@ class WebTaskHandler(object):
                         }
                     }
                 }
+                table_api = db_api.YzyVoiTorrentTaskTableCtrl(current_app.db)
+                qry_terminals = table_api.select_terminal_all_task(terminal_mac=mac)
+                if qry_terminals:
+                    table_api.delete_tasks(qry_terminals)
                 msg = json.dumps(send_data)
                 self.msg_center.public(msg)
             if self.rds.ping():
@@ -1376,6 +1509,79 @@ class WebTaskHandler(object):
                 }
                 logger.warning('mac not found in yzy_voi_terminal {}'.format(mac))
             resp["data"] = terminal_values
+            return resp
+        except Exception as err:
+            logger.error(err)
+            logger.error(''.join(traceback.format_exc()))
+            resp = errcode.get_error_result(error="OtherError")
+            return resp
+
+    @timefn
+    def terminal_upgrade(self, data):
+        """ 终端升级 """
+        try:
+            logger.debug("terminal upgrade: %s" % data)
+            resp = errcode.get_error_result()
+            batch_no = self.create_batch_no()
+            json_data = data.get("data")
+            upgrade_package = json_data.get("upgrade_package")
+            group_uuid = json_data.get("group_uuid")
+            mac_list = json_data.get("mac_list").split(',')
+            # table_api = db_api.YzyVoiTerminalTableCtrl(current_app.db)
+            # qrys = table_api.select_terminal_by_group_uuid(group_uuid)
+            # mac_list = [qry.mac for qry in qrys]
+            if not (len(mac_list) and upgrade_package):
+                logger.error("param error, group_uuid {}".format(group_uuid))
+                return errcode.get_error_result("RequestParamError")
+            # 升级包拷贝
+            package_name = os.path.basename(upgrade_package)
+            platform, os_name, version = os.path.splitext(package_name)[0].split("_")
+            # tftp_file = os.path.join(constants.TFTP_PATH, package_name)
+            upgrade_package_names = list()
+            try:
+                if not os.path.exists(constants.TFTP_PATH):
+                    os.makedirs(constants.TFTP_PATH)
+                # 解压到目标文件夹
+                # r = zipfile.is_zipfile(upgrade_package)
+                fz = zipfile.ZipFile(upgrade_package, 'r')
+                for _file in fz.namelist():
+                    fz.extract(_file, constants.TFTP_PATH)
+                    upgrade_package_names.append(_file)
+                # shutil.copy(upgrade_package, tftp_file)
+            except:
+                logger.error("", exc_info=True)
+
+            # if not os.path.exists(tftp_file):
+            #     logger.error("terminal upgrade tftp file: %s not exists"% tftp_file)
+            #     return errcode.get_error_result("TerminalUpgradepagNotExist")
+
+            for mac in mac_list:
+                send_data = {
+                    "cmd": "terminal_upgrade",
+                    "data": {
+                        "mac": mac,
+                        "params": {
+                            "batch_no": batch_no,
+                            "upgrade_package": ",".join(upgrade_package_names),
+                            "version": version,
+                            "os_name": os_name,
+                            "platform": platform
+                        }
+                    }
+                }
+                msg = json.dumps(send_data)
+                self.msg_center.public(msg)
+            if self.rds.ping():
+                redis_key = 'voi_command:terminal_upgrade:{}'.format(batch_no)
+                insert_data = {
+                    "send_macs": mac_list,
+                    "confirm_macs": "",
+                    'datetime': dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                self.rds.set(redis_key, json.dumps(insert_data).encode('utf-8'), self.rds.live_seconds)
+            else:
+                logger.debug('Redis server error')
+                resp = errcode.get_error_result(error="RedisServerError")
             return resp
         except Exception as err:
             logger.error(err)

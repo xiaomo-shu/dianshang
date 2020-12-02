@@ -2,11 +2,9 @@ import logging
 from flask import current_app
 import hashlib
 
-logger = logging.getLogger(__name__)
-
 
 def create_md5_token(key, s):
-    logger.info("create md5")
+    logging.info("create md5")
     return hashlib.md5(("%s%s"% (s, key)).encode()).hexdigest()
 
 
@@ -17,6 +15,6 @@ def deal_task(task):
         c = handler
         result = c.deal(task)
         # 保证json序列化，这个判断并不完整，如果字典或者列表中值也有不能json序列化的，还是会出错
-        if type(result) in [dict, list, tuple, str, int, float, True, False]:
+        if type(result) in [dict, list, tuple, str, int, float, bool]:
             return result
 

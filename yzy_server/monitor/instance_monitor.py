@@ -12,6 +12,7 @@ from common import cmdutils
 from yzy_server.database import apis as db_api
 from yzy_server.database import models
 from yzy_server.apis.v1.controllers.desktop_ctl import BaseController
+# from libs.yzyRedis import yzyRedis
 
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,9 @@ def update_template_info():
 def update_instance_info():
     instances = db_api.get_instance_with_all({})
     rep_data = dict()
+    instance_dict = dict()
     for instance in instances:
+        instance_dict[instance.uuid] = instance
         host_ip = instance.host.ip
         _d = {
             "uuid": instance.uuid,
@@ -201,6 +204,7 @@ def update_instance_info():
             rep_data[host_ip] = list()
         rep_data[host_ip].append(_d)
 
+    # link_num = 0
     for k, v in rep_data.items():
         command_data = {
             "command": "get_status_many",
@@ -213,6 +217,12 @@ def update_instance_info():
         rep_json = compute_post(k, command_data)
         logger.debug("from compute get rep_json:{}".format(rep_json))
         if rep_json.get("code", -1) != 0:
+            # 如果节点计算服务连接失败，则桌面都更新为关机状态
+            if rep_json.get("code", -1) == 80000:
+                for _d in v:
+                    if instance_dict[_d["uuid"]].status != constants.STATUS_INACTIVE:
+                        instance_dict[_d["uuid"]].update({"status": constants.STATUS_INACTIVE})
+                        logger.info("compute service unavaiable at node: %s, update instance.status to inactive: %s", k, _d["uuid"])
             continue
         for item in rep_json.get("data", []):
             for instance in instances:
@@ -220,6 +230,7 @@ def update_instance_info():
                     if item.get("state") in [constants.DOMAIN_STATE['running']]:
                         if constants.STATUS_INACTIVE == instance.status:
                             instance.status = constants.STATUS_ACTIVE
+                            instance.soft_update()
                     elif item.get('state') in [constants.DOMAIN_STATE['shutdown'], constants.DOMAIN_STATE['shutoff']]:
                         if constants.STATUS_ACTIVE == instance.status:
                             instance.status = constants.STATUS_INACTIVE
@@ -263,9 +274,10 @@ def update_instance_info():
 
                                 logger.info('rtn: %s, desktop.uuid: %s, instance.terminal_mac: %s' %
                                             (ret, desktop.uuid, instance.terminal_mac))
+                        instance.soft_update()
                     else:
                         pass
-                    instance.soft_update()
+                    # instance.soft_update()
                     logger.debug("the instance %s state %s", instance.uuid, item.get('state', 0))
                     break
         spice_ports = list()
@@ -281,11 +293,20 @@ def update_instance_info():
             ports_status = {}
         logger.info("from node %s get port status:%s", k, ports_status)
         for instance in instances:
-            if instance.spice_port:
+            if instance.host.ip == k and instance.spice_port:
                 instance.spice_link = ports_status.get("data", {}).get(instance.spice_port, False)
                 if not instance.spice_link:
                     instance.allocated = 0
+                instance.soft_update()
             logger.debug("the instance %s spice_link:%s", instance.uuid, instance.spice_link)
+        # link_num += list(ports_status.get("data", {}).values()).count(True)
+    # try:
+    #     redis = yzyRedis()
+    #     redis.init_app()
+    #     logger.info("the link num is %s", link_num)
+    #     redis.set(constants.AUTH_SIZE_KEY, link_num)
+    # except Exception as e:
+    #     logger.exception("set auth link num failed:%s", e)
 
 
 def update_template_disk_usage():
@@ -293,18 +314,15 @@ def update_template_disk_usage():
     templates = db_api.get_template_with_all({})
     voi_templates = db_api.get_item_with_all(models.YzyVoiTemplate, {})
     if templates or voi_templates:
-        template_sys = db_api.get_template_sys_storage()
-        template_data = db_api.get_template_data_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        sys_path = os.path.join(sys_base, 'instances')
-        if not template_data:
-            data_base = constants.DEFAULT_DATA_PATH
-        else:
-            data_base = template_data.path
-        data_path = os.path.join(data_base, 'datas')
+        node = db_api.get_controller_node()
+        node_uuid = node.uuid
+        template_sys = db_api.get_template_sys_storage(node_uuid)
+        template_data = db_api.get_template_data_storage(node_uuid)
+        if not (template_sys and template_data):
+            logging.error("there is not storage path, skip")
+        sys_path = os.path.join(template_sys.path, 'instances')
+        data_path = os.path.join(template_data.path, 'datas')
+
     for template in templates:
         if constants.STATUS_INACTIVE == template.status:
             devices = db_api.get_devices_by_instance(template.uuid)

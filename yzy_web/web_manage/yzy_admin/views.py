@@ -11,6 +11,7 @@ from .serializers import *
 from web_manage.common.utils import JSONResponse, YzyWebPagination, YzyAuthentication, YzyPermission, create_md5, \
                             get_error_result
 from web_manage.common.log import insert_operation_log
+from web_manage.yzy_edu_desktop_mgr.models import YzyInstanceTemplate
 
 from rest_framework.views import APIView
 from rest_framework.authentication import BaseAuthentication
@@ -99,6 +100,15 @@ class AuthView(APIView):
                     "user_name": user,
                     "user_ip": remote_ip
                 }
+
+            lic_info = LicenseManager().info()
+            # license_status = lic_info['auth_type']
+            # ret["data"]["trail_days"] = lic_info['expire_time']
+
+            # ret['data']['vdi_flag'] = True if lic_info['vdi_size'] else False
+            # ret['data']['voi_flag'] = True if lic_info['voi_size'] else False
+            ret["data"]["vdi_flag"] = True if lic_info.get("vdi_size", None) else False
+            ret['data']['voi_flag'] = True if lic_info.get("voi_size", None) else False
         except Exception as e:
             logger.error("user login error: ", exc_info=True)
             ret = get_error_result("OtherError")
@@ -224,9 +234,13 @@ class AdminUsersView(APIView):
         if not user:
             logger.error("user not exist: %s", user_id)
             return JSONResponse(get_error_result("UserNotExistError"))
-        if user.username == "admin":
+        if user.is_superuser:
             logger.error("Super administrator does not allow deletion:%s", user.username)
             return JSONResponse(get_error_result("SuperAdminNotDeleteError"))
+        template = YzyInstanceTemplate.objects.filter(deleted=False, owner_id=user.id).first()
+        if template:
+            logger.error("delete admin error template under the account")
+            return JSONResponse(get_error_result("TemplateUnderTheAccountError"))
         user.delete()
         ret = get_error_result("Success")
         msg = "删除管理员用户信息：%s" % user.username
@@ -282,6 +296,7 @@ class RolesView(APIView):
     def post(self, request):
         ret = get_error_result()
         _data = request.data
+        _data.update({"enable": 1})
         ser = YzyRoleSerializer(data=_data, context={'request': request})
         if ser.is_valid():
             ser.save()
@@ -379,11 +394,16 @@ class PermissionsView(APIView):
         for person in person_list:
             mode = []
             for menu in menus:
-                if menu.pid == person['id'] and menu.title not in ['详情', '计算节点', '节点信息', '添加成员', '编辑成员', '权限设置']:
+                if menu.pid == person['id'] and menu.type != 4:
                     is_check = True if menu.id in ids else False
                     mode.append({"title": menu.title, "id": menu.id, "ischeck": is_check})
                     if person['title'] not in ['VDI场景', 'VOI场景']:
                         person['check_children'] = True
+                if menu.pid == person['id'] and person['title'] == '资源池管理' and menu.title == '基础镜像':
+                    is_check = True if menu.id in ids else False
+                    mode.append({"title": menu.title, "id": menu.id, "ischeck": is_check})
+                    person['check_children'] = True
+
             person['mode'] = mode
             index = 0
             for i in mode:

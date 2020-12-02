@@ -29,20 +29,18 @@ class ImageService(object):
         logging.info("finish sync thread")
 
     def sync(self, url, image, version, task_id=None):
-        dest_base = image['base_path']
-        dest_path = utils.get_backing_file(version, image['image_id'], dest_base)
-        backing_file = utils.get_backing_file(1, image['image_id'], dest_base)
+        dest_path = image['dest_path']
+        backing_file = image['backing_file']
         if version > 1 and not os.path.exists(backing_file):
             # 模板中途添加数据盘时，需要把base文件同步过来
             logging.info("syncing the backing file:%s", backing_file)
             backing_image = {
                 "image_id": image['image_id'],
-                "image_path": backing_file,
-                "base_path": image['base_path']
+                "disk_file": backing_file
             }
             self.download(url, backing_image, backing_file)
         if os.path.exists(dest_path):
-            logging.info("the image already exists")
+            logging.info("the dest_path %s already exists", dest_path)
             if image.get('md5_sum', None):
                 logging.info("need check md5, get %s md5 sum", dest_path)
                 md5_sum = get_file_md5(dest_path)
@@ -68,7 +66,7 @@ class ImageService(object):
         try:
             logging.info("sync the image, info:%s", image)
             # the stream args must be true, otherwise the download will be failed
-            url = '%s?image_id=%s&image_path=%s&s' % (url, image['image_id'], image['image_path'])
+            url = '%s?image_id=%s&image_path=%s&s' % (url, image['image_id'], image['disk_file'])
             if task_id:
                 url = "%s&task_id=%s" % (url, task_id)
             resp, image_chunks = self.http_client.get(url)
@@ -77,6 +75,7 @@ class ImageService(object):
             raise
 
         logging.info("data is none, open the dst_path:%s", dest_path)
+        utils.ensure_tree(os.path.dirname(dest_path))
         data = open(dest_path, 'wb')
         close_file = True
 
@@ -186,10 +185,10 @@ class ImageService(object):
     def recreate_disks(self, disks):
         for disk in disks:
             try:
-                os.remove(disk['disk_path'])
+                os.remove(disk['disk_file'])
             except:
                 pass
-            cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk['disk_path'], '-o',
+            cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk['disk_file'], '-o',
                              'backing_file=%s' % disk['backing_file'], run_as_root=True)
 
     # def save(self, instance, version, images, timeout=30):
@@ -209,23 +208,11 @@ class ImageService(object):
     #                 logging.error("file not found")
     #     logging.info("save template finished")
 
-    def convert(self, template, new_image):
-        # instance = {
-        #     "uuid": template['uuid'],
-        #     "name": template['name']
-        # }
-        # virt = LibvirtDriver()
-        # virt.power_off(instance, timeout=120)
-        base_path = template['base_path']
-        if template['image_version'] > 0:
-            # 模板只保留一个版本
-            source_path = utils.get_backing_file(1, template['system_uuid'], base_path)
-        else:
-            source_path = utils.get_backing_file(template['image_version'], template['image_id'], base_path)
-        backing_path = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
-        dest_path = os.path.join(backing_path, new_image)
+    def convert(self, template):
+        source_path = template['backing_file']
+        dest_path = template['dest_file']
         logging.info("start convert, source:%s, dest:%s", source_path, dest_path)
-        if template['image_version'] > 0:
+        if template['need_convert']:
             logging.info("convert from %s to %s", source_path, dest_path)
             cmdutils.execute('qemu-img', 'convert', '-f', 'qcow2', '-O', 'qcow2',
                              source_path, dest_path, run_as_root=True)
@@ -286,14 +273,9 @@ class ImageService(object):
                 pass
         return {'path': file_path}
 
-    def copy_images(self, image, version):
-        base_path = image['base_path']
-        backing_path = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
-        if version > 0:
-            version = 1
-        backing_file = utils.get_backing_file(version, image['image_id'], base_path)
-        dest_file_name = utils.get_backing_file(version, image['new_image_id'], base_path)
-        dest_file = os.path.join(backing_path, dest_file_name)
+    def copy_images(self, image):
+        backing_file = image['backing_file']
+        dest_file = image['dest_file']
         try:
             logging.info("copy file from %s to %s", backing_file, dest_file)
             shutil.copy(backing_file, dest_file)
@@ -303,34 +285,26 @@ class ImageService(object):
         logging.info("copy new image success")
         return True
 
-    def delete_image(self, image, version=0):
-        base_path = image['base_path']
-        # backing_path = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
-        if version > 0:
-            version = 1
-        backing_file = utils.get_backing_file(version, image['image_id'], base_path)
+    def delete_image(self, image):
         try:
-            logging.info("delete file %s", backing_file)
-            if os.path.exists(backing_file):
-                os.remove(backing_file)
+            logging.info("delete file %s", image['disk_file'])
+            if os.path.exists(image['disk_file']):
+                os.remove(image['disk_file'])
         except IOError as e:
             logging.error("copy image failed:%s", e)
-            raise exception.ImageDeleteIOError(backing_file)
+            raise exception.ImageDeleteIOError(image['disk_file'])
         logging.info("delete image success")
         return True
 
-    def resize_disk(self, uuid, images):
+    def resize_disk(self, images):
         for image in images:
-            base_path = image['base_path']
-            instance_path = os.path.join(base_path, uuid)
-            image_file = os.path.join(instance_path, constants.DISK_FILE_PREFIX + image['image_id'])
             try:
-                logging.info("resize file %s", image_file)
+                logging.info("resize file %s", image['disk_file'])
                 size = '+%sG' % image['size']
-                cmdutils.execute('qemu-img', 'resize', image_file, size, run_as_root=True)
+                cmdutils.execute('qemu-img', 'resize', image['disk_file'], size, run_as_root=True)
             except Exception as e:
                 logging.error("resize image file failed:%s", e)
-                raise exception.ImageResizeError(image=image_file, error=e)
+                raise exception.ImageResizeError(image=image['disk_file'], error=e)
         logging.info("resize image success")
         return True
 

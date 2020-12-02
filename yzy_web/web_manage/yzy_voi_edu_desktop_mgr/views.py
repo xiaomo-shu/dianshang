@@ -188,7 +188,19 @@ class VoiEducationGroupView(APIView):
                 "group_type": 1,
                 "desc": "this is group2",
                 "start_ip": "172.16.1.40",
-                "end_ip": "172.16.1.60"
+                "end_ip": "172.16.1.60",
+                "dhcp": {
+                    "start_ip": "172.16.1.40",
+                    "end_ip": "172.16.1.54",
+                    "netmask": "255.255.255.0",
+                    "gateway": "172.16.1.254",
+                    "dns1": "8.8.8.8",
+                    "dns2": "",
+                    "exclude": [
+                        {"start": "172.16.1.24", "end": "172.16.1.24"},
+                        {"start": "172.16.1.24", "end": "172.16.1.24"}
+                    ]
+                }
             }
         :return:
         """
@@ -205,6 +217,59 @@ class VoiEducationGroupView(APIView):
             flag_f = ipaddress.ip_network(data['end_ip']).compare_networks(ipaddress.ip_network(group.end_ip))
             if (flag_a >= 0 and flag_b >= 0) or (flag_c >= 0 and flag_d >= 0) or (flag_e >= 0 and flag_f >= 0):
                 return get_error_result("IpAddressConflictError")
+        # # dhcp 参数判断
+        # dhcp = data.get("dhcp")
+        # start_ip = dhcp.get("start_ip")
+        # end_ip = dhcp.get("end_ip")
+        # netmask = dhcp.get("netmask")
+        # gateway = dhcp.get("gateway")
+        # if (dhcp and start_ip and end_ip and netmask and gateway):
+        #     # 配置启用dhcp
+        #     # pass
+        #     for group in groups:
+        #         group_dhcp = group.dhcp
+        #         if group_dhcp:
+        #             group_dhcp_dict = json.loads(group_dhcp)
+        #             flag_a = ipaddress.ip_network(dhcp['start_ip']).compare_networks(
+        #                 ipaddress.ip_network(group_dhcp_dict["start_ip"]))
+        #             flag_b = ipaddress.ip_network(group_dhcp_dict["end_ip"]).compare_networks(
+        #                 ipaddress.ip_network(dhcp['start_ip']))
+        #             flag_c = ipaddress.ip_network(dhcp['end_ip']).compare_networks(
+        #                 ipaddress.ip_network(group_dhcp_dict["start_ip"]))
+        #             flag_d = ipaddress.ip_network(group_dhcp_dict["end_ip"]).compare_networks(
+        #                 ipaddress.ip_network(dhcp['end_ip']))
+        #             flag_e = ipaddress.ip_network(group_dhcp_dict["start_ip"]).compare_networks(
+        #                 ipaddress.ip_network(dhcp['start_ip']))
+        #             flag_f = ipaddress.ip_network(dhcp['end_ip']).compare_networks(
+        #                 ipaddress.ip_network(group_dhcp_dict["end_ip"]))
+        #             if (flag_a >= 0 and flag_b >= 0) or (flag_c >= 0 and flag_d >= 0) or (flag_e >= 0 and flag_f >= 0):
+        #                 return get_error_result("DhcpIpAddressConflictError")
+        #     temp_ip_range = list()
+        #     exclude = dhcp.get("exclude", [])
+        #     for item in exclude:
+        #         start = item["start"]
+        #         end = item["end"]
+        #         if (ipaddress.IPv4Address(start) < ipaddress.IPv4Address(dhcp["start_ip"])
+        #             or ipaddress.IPv4Address(end) > ipaddress.IPv4Address(dhcp["end_ip"])):
+        #             logger.error("dhcp ip exclude error: %s"% item)
+        #             return get_error_result("DhcpIpAddressConflictError")
+        #
+        #         if not temp_ip_range:
+        #             temp_ip_range.append(item)
+        #             continue
+        #         for range in temp_ip_range:
+        #             _start = range["start"]
+        #             _end = range["end"]
+        #             if ((ipaddress.IPv4Address(start) >= ipaddress.IPv4Address(_start))
+        #                     and (ipaddress.IPv4Address(start) <= ipaddress.IPv4Address(_end))):
+        #                 logger.error("dhcp ip exclude error %s"% range)
+        #                 return get_error_result("DhcpIpAddressConflictError")
+        #
+        #             if ((ipaddress.IPv4Address(start) >= ipaddress.IPv4Address(_start))
+        #                     and (ipaddress.IPv4Address(start) <= ipaddress.IPv4Address(_end))):
+        #                 logger.error("dhcp ip exclude error %s"% range)
+        #                 return get_error_result("DhcpIpAddressConflictError")
+
         ret = server_post("/api/v1/voi/group/create", data)
         return ret
 

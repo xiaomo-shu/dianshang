@@ -120,17 +120,23 @@ class ResourcePoolController(object):
     def sync_base(self, ipaddr, server_ip, image_id, image_path, host_uuid=None, md5_sum=None, version=0):
         """节点同步镜像"""
         task = Task(image_id=image_id, host_uuid=host_uuid, version=version)
+        uuid = create_uuid()
         task_id = create_uuid()
+        # 添加任务信息记录
+        task_data = {
+            "uuid": uuid,
+            "task_uuid": task_id,
+            "name": constants.NAME_TYPE_MAP[2],
+            "status": constants.TASK_RUNNING,
+            "type": 2
+        }
+        db_api.create_task_info(task_data)
         task.begin(task_id, "start sync the image to host:%s" % ipaddr)
-        template_sys = db_api.get_template_sys_storage()
-        if template_sys:
-            base_path = os.path.join(template_sys.path, 'instances')
-        else:
-            base_path = constants.DEFAULT_SYS_PATH
         image = {
             "image_id": image_id,
-            "image_path": image_path,
-            "base_path": base_path,
+            "disk_file": image_path,
+            "backing_file": image_path,
+            "dest_path": image_path,
             "md5_sum": md5_sum
         }
         bind = SERVER_CONF.addresses.get_by_default('server_bind', '')
@@ -151,13 +157,19 @@ class ResourcePoolController(object):
             }
         }
         rep_json = compute_post(ipaddr, command_data, timeout=600)
+        task_obj = db_api.get_task_info_first({"uuid": uuid})
         if rep_json.get('code') != 0:
             logger.info("sync the image to host:%s failed:%s", ipaddr, rep_json['data'])
             task.error(task_id, "sync the image to host:%s failed:%s" % (ipaddr, rep_json['data']))
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
         else:
             logger.info("sync the base to host:%s success", ipaddr)
             task.end(task_id, "sync the image to host:%s success" % ipaddr)
+            task_obj.update({"status": constants.TASK_COMPLETE})
+            task_obj.soft_update()
         # 如果同步失败，考虑添加数据库记录
+
         return rep_json
 
     def upload_images(self, data):
@@ -283,12 +295,6 @@ class ResourcePoolController(object):
             logger.error("resource pool: %s not exist", pool_uuid)
             return build_result("ResourcePoolNotExist")
 
-        template_sys = db_api.get_template_sys_storage()
-        if template_sys:
-            base_path = os.path.join(template_sys.path, 'instances')
-        else:
-            base_path = constants.DEFAULT_SYS_PATH
-
         nodes = db_api.get_node_by_pool_uuid(pool_uuid)
         success_num = 0
         fail_num = 0
@@ -313,10 +319,8 @@ class ResourcePoolController(object):
                     "command": "delete_base",
                     "handler": "TemplateHandler",
                     "data": {
-                        "image_version": 0,
                         "image": {
-                            "image_id": uuid,
-                            "base_path": base_path
+                            "disk_file": image['path']
                         }
                     }
                 }
@@ -347,4 +351,31 @@ class ResourcePoolController(object):
         # 一个成功的执行都没有
         return build_result("ResourceImageDelFail")
 
-
+    def update_storages(self, resource_pool_uuid, data):
+        if resource_pool_uuid:
+            nodes = db_api.get_node_with_all({'resource_pool_uuid': resource_pool_uuid})
+        else:
+            nodes = db_api.get_node_with_all({})
+        # 需要所有节点都有此存储路径才能进行配置
+        node_uuid_list = []
+        for node in nodes:
+            node_uuid_list.append(node.uuid)
+            storages = db_api.get_node_storage_all({'node_uuid': node.uuid})
+            for path, role in data.items():
+                for store in storages:
+                    if path == store.path:
+                        break
+                else:
+                    return build_result("NodeStorageNotExist", node=node.name, path=path)
+        # 配置存储路径，同时清掉之前存储路径的角色
+        storages = db_api.get_node_storage_all({})
+        for store in storages:
+            if store.node_uuid in node_uuid_list:
+                for path, role in data.items():
+                    if path == store.path:
+                        store.role = role
+                        break
+                else:
+                    store.role = ''
+                store.soft_update()
+        return build_result("Success")

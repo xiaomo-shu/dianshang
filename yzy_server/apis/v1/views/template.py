@@ -216,7 +216,7 @@ class TemplateAPI(MethodView):
             else:
                 return build_result("ReturnError")
         except Exception as e:
-            logger.error("template action %s failed:%s", action, e)
+            logger.exception("template action %s failed:%s", action, e)
             return build_result("OtherError")
 
 

@@ -13,7 +13,7 @@ class HttpClient(object):
     def __init__(self):
         pass
 
-    def post(self, url, data):
+    def post(self, url, data={}):
         bind = SERVER_CONF.addresses.get_by_default('server_bind', '')
         if bind:
             port = bind.split(':')[-1]

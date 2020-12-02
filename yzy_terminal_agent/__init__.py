@@ -55,6 +55,7 @@ def configure_scheduler(app):
     # atexit.register(unlock)
 
 
+# 查询bt上传进度
 def start_task_timer(app):
     bt_task = BtStateTask(app, 5)
     bt_task.start()

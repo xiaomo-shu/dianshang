@@ -46,6 +46,8 @@ class LibvirtConfigStorage(StorageConfigObject):
         self.uuid = None
         self.source = None
         self.target_path = None
+        self.owner = None
+        self.group = None
 
     def _format_target(self, storage):
         target = etree.Element('target')
@@ -53,6 +55,10 @@ class LibvirtConfigStorage(StorageConfigObject):
             target.append(self._text_node("path", self.target_path))
         permission = etree.Element('permissions')
         permission.append(self._text_node("mode", "0777"))
+        if self.owner:
+            permission.append(self._text_node("owner", self.owner))
+        if self.group:
+            permission.append(self._text_node("group", self.group))
         target.append(permission)
         storage.append(target)
 

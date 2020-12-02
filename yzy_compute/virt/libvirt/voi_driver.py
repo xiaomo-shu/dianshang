@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 import functools
 import uuid
@@ -36,6 +37,9 @@ class VoiLibvirtDriver(LibvirtDriver):
             utils.ensure_tree(backing_dir)
         version = disk.get('image_version', 0)
         dest_file_name = constants.VOI_BASE_PREFIX % str(version) + disk['uuid']
+        if version > constants.IMAGE_COMMIT_VERSION:
+            dest_file_name = constants.VOI_BASE_PREFIX % str(constants.IMAGE_COMMIT_VERSION) + disk['uuid']
+
         dest_file = os.path.join(backing_dir, dest_file_name)
         if os.path.exists(dest_file):
             logging.info("the file %s already exist", dest_file)
@@ -147,6 +151,11 @@ class VoiLibvirtDriver(LibvirtDriver):
         for config in network_configs:
             guest.add_device(config)
 
+        # 鼠标不同步问题，uefi模式下才会有这个问题
+        usbhost = vconfig.LibvirtConfigGuestUSBHostController()
+        # uefi时，默认是 qemu-xhci，会导致鼠标没办法用
+        usbhost.model = 'piix3-uhci'
+        guest.add_device(usbhost)
         # usb tablet,解决鼠标漂移问题
         if CONF.vnc.enabled or (
                 CONF.spice.enabled and not CONF.spice.agent_enabled):
@@ -246,7 +255,8 @@ class VoiLibvirtDriver(LibvirtDriver):
         for image in images:
             try:
                 logging.info("delete voi template file:%s", image['image_path'])
-                os.remove(image['image_path'])
+                if os.path.exists(image['image_path']):
+                    os.remove(image['image_path'])
                 # 删除种子
                 torrent_path = image['image_path'] + ".torrent"
                 if os.path.exists(torrent_path):
@@ -288,41 +298,80 @@ class VoiLibvirtDriver(LibvirtDriver):
         else:
             raise exception.CdromNotExist(domain=instance['uuid'])
 
-    def save_template(self, version, images):
+    def save_template(self, version, images, is_upload=False):
         """
         :param version: the template version
         :param images: the template device info
+            {
+                "disk_file": "",
+                "backing_file": "",
+                "base_file": "",
+                "commit_file": ""
+            }
         :return:
         """
         for image in images:
+            dest_base = os.path.join(image['base_path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
             file_name = constants.VOI_FILE_PREFIX + image['image_id']
             source_file = os.path.join(image['base_path'], file_name)
             dest_file_name = constants.VOI_BASE_PREFIX % str(version) + image['image_id']
-            dest_base = os.path.join(image['base_path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
+            # if version > constants.IMAGE_COMMIT_VERSION:
+            #     dest_file_name = constants.VOI_BASE_PREFIX % str(constants.IMAGE_COMMIT_VERSION) + image['image_id']
             dest_file = os.path.join(dest_base, dest_file_name)
             logging.info("move %s to %s", source_file, dest_file)
+            # if not is_upload:
             shutil.move(source_file, dest_file)
-            # 保留2个版本
-            if version > constants.IMAGE_COMMIT_VERSION and image['need_commit']:
-                commit_file = os.path.join(dest_base, constants.VOI_BASE_PREFIX % str(int(version) - 1) + image['image_id'])
-                logging.info("commit the diff file:%s", commit_file)
-                stdout, stderr = cmdutils.execute('qemu-img', 'commit', '-f', 'qcow2', commit_file, run_as_root=True)
-                if stderr:
-                    raise exception.ImageCommitError(image=commit_file, error=stderr)
+            # else:
+            #     os.remove(source_file)
 
-                base_file = os.path.join(dest_base, constants.VOI_BASE_PREFIX % str(int(version) - 2) + image['image_id'])
-                # stdout, stderr = cmdutils.execute('qemu-img', 'rebase', '-u', '-b', base_file, dest_file, run_as_root=True)
-                # if stderr:
-                #     raise exception.ImageCommitError(image=commit_file, error=stderr)
-                try:
-                    logging.info("delete the diff file after commit")
-                    os.remove(commit_file)
-                except:
-                    pass
-                os.rename(base_file, commit_file)
+            # 保留2个版本, 0 , 1, 2
+            if version > constants.IMAGE_COMMIT_VERSION:
+                commit_file = os.path.join(dest_base, constants.VOI_BASE_PREFIX % str(constants.IMAGE_COMMIT_VERSION) +
+                                           image['image_id'])
+                if image['need_commit']:
+                    logging.info("commit the diff file:%s", commit_file)
+                    stdout, stderr = cmdutils.execute('qemu-img', 'commit', '-f', 'qcow2', commit_file, run_as_root=True)
+                    if stderr:
+                        raise exception.ImageCommitError(image=commit_file, error=stderr)
+
+                    base_file = os.path.join(dest_base, constants.VOI_BASE_PREFIX % str(1) + image['image_id'])
+                    # stdout, stderr = cmdutils.execute('qemu-img', 'rebase', '-u', '-b', base_file, dest_file, run_as_root=True)
+                    # if stderr:
+                    #     raise exception.ImageCommitError(image=commit_file, error=stderr)
+                    try:
+                        logging.info("delete the diff file after commit: %s" % commit_file)
+                        os.remove(commit_file)
+                        torrent_file = commit_file + ".torrent"
+                        if os.path.exists(torrent_file):
+                            os.remove(torrent_file)
+                        base_torrent_file = base_file + ".torrent"
+                        if os.path.exists(base_torrent_file):
+                            os.remove(base_torrent_file)
+                    except:
+                        pass
+                    # 需要修改backing_file
+                    logging.info("rebase the dest_file: %s", dest_file)
+                    stdout, stderr = cmdutils.execute('qemu-img', 'rebase', '-u', '-b', base_file, dest_file,
+                                                      run_as_root=True)
+                    if stderr:
+                        raise exception.ImageRebaseError(image=commit_file, error=stderr)
+
+                os.rename(dest_file, commit_file)
+                dest_file = commit_file
                 logging.info("merge the diff file end")
+            else:
+                if is_upload:
+                    backing_file = constants.VOI_BASE_PREFIX % str(version - 1) + image['image_id']
+                    # 需要修改backing_file
+                    logging.info("version %s rebase the dest_file: %s", version, dest_file)
+                    stdout, stderr = cmdutils.execute('qemu-img', 'rebase', '-u', '-b', backing_file, dest_file,
+                                                      run_as_root=True)
+                    if stderr:
+                        raise exception.ImageRebaseError(image=dest_file, error=stderr)
+
             cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', source_file, '-o',
                              'backing_file=%s' % dest_file, run_as_root=True)
+
             # else:
             #     cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', source_file, '-o',
             #                      'backing_file=%s' % dest_file, run_as_root=True)
@@ -332,6 +381,10 @@ class VoiLibvirtDriver(LibvirtDriver):
         self.change_cdrom_path(instance, "", live=False)
 
     def rollback(self, rollback_version, cur_version, images):
+        if rollback_version != 0 and cur_version > constants.IMAGE_COMMIT_VERSION:
+            rollback_version = 1
+            cur_version = 2
+
         for image in images:
             file_name = constants.VOI_FILE_PREFIX + image['image_id']
             disk_file = os.path.join(image['base_path'], file_name)
@@ -346,7 +399,8 @@ class VoiLibvirtDriver(LibvirtDriver):
             cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, '-o',
                              'backing_file=%s' % backing_file, run_as_root=True)
             logging.info("rollback the version, image:%s", image)
-            delete_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(cur_version) + image['image_id'])
+            delete_file = os.path.join(backing_dir, constants.VOI_BASE_PREFIX % str(cur_version)
+                                       + image['image_id'])
             try:
                 logging.info("delete file %s", delete_file)
                 os.remove(delete_file)
@@ -354,8 +408,18 @@ class VoiLibvirtDriver(LibvirtDriver):
                 torrent_file = delete_file + ".torrent"
                 if os.path.exists(torrent_file):
                     os.remove(torrent_file)
-            except:
+
+                stdout, stderror = cmdutils.execute('qemu-img info %s' % disk_file,
+                                                    shell=True, timeout=20, run_as_root=True)
+                # 获取该盘的大小
+                logging.info("qemu-img info execute end, stdout:%s, stderror:%s", stdout, stderror)
+                current_size = int(re.search(r"virtual size: (\d+)G \((\d+) bytes\)", stdout).group(1))
+                image["size"] = current_size
+            except Exception as e:
+                logging.error("", exc_info=True)
                 pass
+
+        return images
 
     def create_data_file(self, instance, disk, version):
         backing_dir = os.path.join(disk['base_path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
@@ -467,8 +531,13 @@ class VoiLibvirtDriver(LibvirtDriver):
             base_path = image['base_path']
             image_file = os.path.join(base_path, constants.VOI_FILE_PREFIX + image['image_id'])
             try:
+                # 先查出该盘的大小
+                stdout, stderror = cmdutils.execute('qemu-img info %s' % image_file,
+                                                    shell=True, timeout=20, run_as_root=True)
+                logging.info("qemu-img info execute end, stdout:%s, stderror:%s", stdout, stderror)
+                current_size = int(re.search(r"virtual size: (\d+)G \((\d+) bytes\)", stdout).group(1))
                 logging.info("resize file %s", image_file)
-                size = '+%sG' % image['size']
+                size = '+%sG' % (int(image['tag_size']) - current_size)
                 cmdutils.execute('qemu-img', 'resize', image_file, size, run_as_root=True)
             except Exception as e:
                 logging.error("resize image file failed:%s", e)
@@ -504,10 +573,20 @@ class VoiLibvirtDriver(LibvirtDriver):
     #         raise exception.CdromNotExist(domain=instance['uuid'])
 
     def copy_images(self, images):
+        images.sort(key=lambda x:x['image_path'])
+        pre_image = None
         for image in images:
             try:
                 logging.info("copy file from %s to %s", image['image_path'], image['dest_path'])
                 shutil.copy(image['image_path'], image['dest_path'])
+                if pre_image and pre_image["type"] == image["type"]:
+                    backing_file = pre_image['dest_path']
+                    dest_path = image['dest_path']
+                    stdout, stderr = cmdutils.execute('qemu-img', 'rebase', '-u', '-b', backing_file, dest_path,
+                                                      run_as_root=True)
+                    if stderr:
+                        raise exception.ImageRebaseError(image=dest_path, error=stderr)
+                pre_image = image
             except IOError as e:
                 logging.error("copy image failed:%s", e)
                 raise exception.ImageCopyIOError(image['image_path'])
@@ -577,3 +656,58 @@ class VoiLibvirtDriver(LibvirtDriver):
     def set_vcpu_and_ram(self, instance, vcpu, ram):
         guest = self._host.get_guest(instance)
         guest.set_vcpu_and_ram(vcpu, ram, True, True)
+
+    def define_ha_voi_domain(self, xml_file, instance, network_info, disk_info, power_on=True, iso=False, configdrive=True):
+        """启用HA时，在备控上定义VOI模板的虚拟机"""
+        # for disk in disk_info:
+        #     if constants.DISK_TYPE_DEFAULT == disk.get('type', 'disk') and not disk.get('path'):
+        #         if iso:
+        #             disk_file = self._prepare_iso_disk(disk)
+        #         else:
+        #             disk_file = self._prepare_voi_disk(disk)
+        #         disk['path'] = disk_file
+        try:
+            guest = self._define_ha_voi_domain(xml_file, instance, network_info, disk_info, configdrive=configdrive, power_on=power_on)
+        except Exception as e:
+            # domain is already running
+            if isinstance(e, libvirt.libvirtError) and 55 == e.get_error_code():
+                logging.info("domain already running, skip")
+                guest = self._host.get_guest(instance)
+                return guest, False
+            try:
+                self.destroy(instance)
+            except:
+                pass
+            raise e
+        return guest, True
+
+    def _define_ha_voi_domain(self, xml_file, instance, network_info, disk_info, configdrive=True, power_on=True):
+        configdisk = None
+        if configdrive:
+            # when create virtual machine, we add a configdrive disk info
+            # the boot_index is same with boot disk, so we put the configdriver file in instance data dir
+            cdroms = list()
+            for disk in disk_info:
+                if "cdrom" == disk.get('type', 'disk'):
+                    cdroms.append(disk)
+            if cdroms:
+                # 获取第一个cdrom用作IP设置
+                configdisk = cdroms[0]
+                for dev in cdroms:
+                    if dev['dev'] < configdisk['dev']:
+                        configdisk = dev
+            # instance_path = utils.get_instance_path(instance)
+            if configdisk:
+                disk_config_path = os.path.join(constants.DEFAULT_CONFIGDRIVE_PATH, '%s.config' % instance['uuid'])
+                configdisk['path'] = disk_config_path
+                logging.info("update configdrive device %s path to %s", configdisk['dev'], disk_config_path)
+                gen_confdrive = functools.partial(self._create_configdrive, instance, network_info, disk_config_path)
+        self.plug_vif(network_info)
+        # xml = self._get_guest_xml(instance, network_info, disk_info)
+        with open(xml_file, "r", encoding="utf8") as fp:
+            xml = fp.read()
+        if configdisk:
+            guest = self._create_guest(xml, post_xml_callback=gen_confdrive, power_on=power_on)
+        else:
+            guest = self._create_guest(xml, power_on=power_on)
+        return guest

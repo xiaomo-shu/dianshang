@@ -19,7 +19,7 @@ class ClientSocket:
     def client_type(self):
         return self.socket_type
 
-    def send(self, payload_data, service_code, token="", data_type=YzyProtocolDataType.JSON):
+    def send(self, payload_data, service_code, token="", data_type=YzyProtocolDataType.JSON, supplemenetary=""):
         # locker.acquire()
         if payload_data:
             if data_type == YzyProtocolDataType.JSON :
@@ -29,11 +29,11 @@ class ClientSocket:
         else:
             send_data = b''
         _size, msg = YzyProtocol().create_paket(service_code, send_data, token.encode('utf-8'),
-                                                req_or_res=YzyProtocolType.REQ)
-        sem.acquire(1)
+                                                req_or_res=YzyProtocolType.REQ, supplemenetary=supplemenetary)
+        # sem.acquire(1)
         self.socket.sendall(msg)
         logger.debug("Request terminal: msg_size {}, msg: {}".format(_size, msg[:1000]))
-        sem.release()
+        # sem.release()
 
     def recv(self, max_recv=8192):
         msg = self.socket.recv(max_recv)

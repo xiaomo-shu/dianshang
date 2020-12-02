@@ -3,6 +3,7 @@ from web_manage.yzy_edu_desktop_mgr import models as education_model
 from web_manage.yzy_user_desktop_mgr import models as personal_model
 from web_manage.common import constants
 from . import models
+from web_manage.yzy_admin.models import YzyAdminUser
 
 
 class DateTimeFieldMix(serializers.ModelSerializer):
@@ -96,7 +97,8 @@ class PersonalDesktopSerializer(DateTimeFieldMix):
         return count
 
     def get_owner(self, obj):
-        return 'admin'
+        user = YzyAdminUser.objects.get(id=obj.owner_id)
+        return user.username
 
     def get_devices(self, obj):
         disks = list()

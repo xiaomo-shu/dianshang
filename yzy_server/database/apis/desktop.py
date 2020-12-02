@@ -1,5 +1,5 @@
 from yzy_server.database.models import *
-from yzy_server.database import model_query
+from yzy_server.database import model_query, many_update, many_update_by_in
 from common import constants
 
 
@@ -86,6 +86,8 @@ def get_voi_devices_with_all(item):
     device = model_query(YzyVoiDeviceInfo).filter_by(**item).all()
     return device
 
+def get_voi_operate_with_all(item):
+    return model_query(YzyVoiTemplateOperate).filter_by(**item).all()
 
 def get_template_version(template_uuid):
     version = model_query(YzyInstanceTemplate.version).filter_by(uuid=template_uuid).first()
@@ -361,3 +363,139 @@ def create_user_random_instance(values):
 def get_terminal_with_all(item):
     terminals = model_query(YzyTerminal).filter_by(**item).all()
     return terminals
+
+
+def create_course_schedule_many(values_list):
+    for values in values_list:
+        course_schedule = YzyCourseSchedule()
+        course_schedule.update(values)
+        db.session.add(course_schedule)
+    db.session.flush()
+
+
+def create_course_template(values):
+    course_template = YzyCourseTemplate()
+    course_template.update(values)
+    db.session.add(course_template)
+    db.session.flush()
+
+
+def create_course_many(values_list):
+    for values in values_list:
+        course = YzyCourse()
+        course.update(values)
+        db.session.add(course)
+    db.session.flush()
+
+
+def create_term(values):
+    term = YzyTerm()
+    term.update(values)
+    db.session.add(term)
+    db.session.flush()
+
+
+def get_course_schedule_with_all(item):
+    return model_query(YzyCourseSchedule).filter_by(**item).all()
+
+
+def get_course_schedule_with_first(item):
+    return model_query(YzyCourseSchedule).filter_by(**item).first()
+
+
+def get_course_template_with_first(item):
+    return model_query(YzyCourseTemplate).filter_by(**item).first()
+
+
+def get_course_template_with_all(item):
+    return model_query(YzyCourseTemplate).filter_by(**item).all()
+
+
+def get_course_with_all(item):
+    return model_query(YzyCourse).filter_by(**item).all()
+
+
+def get_course_with_first(item):
+    return model_query(YzyCourse).filter_by(**item).first()
+
+
+def get_term_with_first(item):
+    return model_query(YzyTerm).filter_by(**item).first()
+
+
+def get_term_with_all(item):
+    return model_query(YzyTerm).filter_by(**item).all()
+
+
+def update_course_schedule_many(value_dict, item):
+    """
+    批量更新yzy_course_schedule
+    :param value_dict: 更新内容字典
+    :param item: 对哪些记录进行批量更新的过滤条件
+    :return: 批量更新成功的数量
+    """
+    return many_update(value_dict, YzyCourseSchedule, **item)
+
+
+def get_distinct_course_template_uuids_by_course_schedule(item):
+    """
+    查询yzy_course_schedule表中不同的course_template_uuid值
+    :param item: 查询yzy_course_schedule的过滤条件
+    :return: [("0d86933a-b3d0-42ef-83b0-d0aad7ca1a7f", ), ("2f3f0d3e-aaed-480e-aa4c-7dc6b91d025f", ), ...]
+    """
+    return model_query(YzyCourseSchedule.course_template_uuid).filter_by(**item).distinct().all()
+
+
+def get_distinct_course_template_uuids_by_course(item):
+    """
+    查询yzy_course表中不同的course_template_uuid值
+    :param item: 查询yzy_course的过滤条件
+    :return: [("0d86933a-b3d0-42ef-83b0-d0aad7ca1a7f", ), ("2f3f0d3e-aaed-480e-aa4c-7dc6b91d025f", ), ...]
+    """
+    return model_query(YzyCourse.course_template_uuid).filter_by(**item).distinct().all()
+
+
+def get_distinct_course_schedule_week_nums(item):
+    """
+    查询yzy_course_schedule表中不同的week_num值
+    :param item: 查询yzy_course_schedule的过滤条件
+    :return: [(1, ), (2, ), ...]
+    """
+    return model_query(YzyCourseSchedule.week_num).filter_by(**item).distinct().all()
+
+
+def delete_course_schedule_many(item):
+    """
+    批量删除yzy_course_schedule
+    :param item: 对哪些记录进行批量删除的过滤条件
+    :return: 批量删除成功的数量
+    """
+    return many_update({"deleted": True, "deleted_at": datetime.datetime.utcnow()}, YzyCourseSchedule, **item)
+
+
+def delete_course_template_many_by_uuids(in_list):
+    """
+    批量删除yzy_course_template
+    :param in_list: 对uuid在in_list范围内的记录进行批量删除
+    :return: 批量删除成功的数量
+    """
+    return many_update_by_in(
+        value_dict={"deleted": True, "deleted_at": datetime.datetime.utcnow()},
+        model=YzyCourseTemplate,
+        field_obj=YzyCourseTemplate.uuid,
+        in_list=in_list
+    )
+
+
+def delete_course_many_by_course_template_uuids(in_list):
+    """
+    批量删除yzy_course
+    :param in_list: 对course_template_uuid在in_list范围内的记录进行批量删除
+    :return: 批量删除成功的数量
+    """
+    return many_update_by_in(
+        value_dict={"deleted": True, "deleted_at": datetime.datetime.utcnow()},
+        model=YzyCourse,
+        field_obj=YzyCourse.course_template_uuid,
+        in_list=in_list
+    )

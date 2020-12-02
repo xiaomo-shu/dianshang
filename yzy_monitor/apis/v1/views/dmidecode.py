@@ -64,7 +64,8 @@ def _parse_handle_section(lines):
     for line in lines:
         line = line.rstrip()
         if line.startswith('\t\t'):
-            data[k].append(line.lstrip())
+            if isinstance(data[k], list):
+                data[k].append(line.lstrip())
         elif line.startswith('\t'):
             k, v = [i.strip() for i in line.lstrip().split(':', 1)]
             if v:
@@ -105,6 +106,32 @@ def _get_output():
     return output.decode()
 
 
+def _get_unknown_memory(memory_info):
+    import subprocess
+    try:
+        output = subprocess.check_output(
+        'PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin '
+        'sudo cat /proc/meminfo |head -n 1', shell=True)
+        total_size_kb = float(output.split()[1])
+        total_size_gb = round(total_size_kb/(1024*1024), 1)
+        known_size_gb = 0
+        if memory_info and type(memory_info) == dict:
+            for key in memory_info:
+                known_size_gb = known_size_gb + int(memory_info[key]['size'][0:-2])
+
+        if total_size_gb > known_size_gb:
+            unknown_size_str = str(total_size_gb - known_size_gb) + 'GB'
+            memory_info['Unknown'] = {'size': unknown_size_str, 'count': 1}
+
+    except Exception as e:
+        print(e, file=sys.stderr)
+        if str(e).find("command not found") == -1:
+            print("please install coreutils", file=sys.stderr)
+            print("e.g. sudo yum install coreutils",file=sys.stderr)
+
+        sys.exit(1)
+
+
 def _show(info, type):
     def _get(i):
         return [v for j, v in info if j == i]
@@ -115,21 +142,27 @@ def _show(info, type):
         print(dict(Counter(hardware_model)))
         return hardware_model
     elif type == 'memory':
-        cnt, total, unit = 0, 0, None
         memory_list_tmp = _get('memory device')
-        memory_list = []
+        memory_info = dict()
         for index in range(len(memory_list_tmp)):
             mem = memory_list_tmp[index]
             if mem['Size'] == 'No Module Installed':
                 continue
             else:
-                memory_list.append(mem)
-            i, unit = mem['Size'].split()
-            cnt += 1
-            total += int(i)
-        hardware_model = [x['Manufacturer'] for x in memory_list]
-        print(dict(Counter(hardware_model)))
-        return hardware_model
+                i, unit = mem['Size'].split()
+                if 'MB' == unit:
+                    i = int(int(i)/1024)
+                else:
+                    i = int(i)
+                if mem['Manufacturer'] not in memory_info:
+                    memory_info[mem['Manufacturer']] = dict()
+                    memory_info[mem['Manufacturer']]['size'] = str(i) + 'GB'
+                if 'count' not in memory_info[mem['Manufacturer']]:
+                    memory_info[mem['Manufacturer']]['count'] = 1
+                else:
+                    memory_info[mem['Manufacturer']]['count'] += 1
+        _get_unknown_memory(memory_info)
+        return memory_info
     elif type == 'bios':
         bios = _get('bios')[0]
         print ('BIOS: %s v.%s %s Systemversion: %s' % (

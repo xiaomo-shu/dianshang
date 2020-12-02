@@ -336,6 +336,7 @@ class YzyVoiGroup(db.Model, SoftDeleteMixin, TimestampMixin):
     name = db.Column(db.String(32), nullable=False)
     group_type = db.Column(db.Integer, nullable=False, default=1)
     enabled = db.Column(db.Boolean, default=1)
+    dhcp = db.Column(db.Text)
     desc = db.Column(db.String(255))
     start_ip = db.Column(db.String(20))
     end_ip = db.Column(db.String(20))
@@ -397,6 +398,8 @@ class YzyInstanceTemplate(db.Model, SoftDeleteMixin, TimestampMixin):
     host = db.relationship('YzyNodes', backref=db.backref('host_of_template'))
     network_uuid = db.Column(db.String(64))
     subnet_uuid = db.Column(db.String(64))
+    sys_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
+    data_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
     bind_ip = db.Column(db.String(20))
     vcpu = db.Column(db.Integer)
     ram = db.Column(db.Float)
@@ -434,10 +437,13 @@ class YzyVoiTemplate(db.Model, SoftDeleteMixin, TimestampMixin):
     desc = db.Column(db.Text)
     os_type = db.Column(db.String(20), default="windows_7_x64")
     owner_id = db.Column(db.Integer, default=1)
+    terminal_mac = db.Column(db.String(64), default="")
     host_uuid = db.Column(db.String(64), db.ForeignKey("yzy_nodes.uuid"))
     host = db.relationship('YzyNodes', backref=db.backref('host_of_voi_template'))
     network_uuid = db.Column(db.String(64))
     subnet_uuid = db.Column(db.String(64))
+    sys_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
+    data_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
     bind_ip = db.Column(db.String(20))
     vcpu = db.Column(db.Integer)
     ram = db.Column(db.Float)
@@ -526,6 +532,8 @@ class YzyVoiDesktop(db.Model, SoftDeleteMixin, TimestampMixin):
     os_type = db.Column(db.String(64), default='windows_7_x64')
     sys_restore = db.Column(db.Integer, nullable=False, default=True)
     data_restore = db.Column(db.Integer, nullable=False, default=True)
+    sys_reserve_size = db.Column(db.Integer, nullable=False, default=0)
+    data_reserve_size = db.Column(db.Integer, nullable=False, default=0)
     prefix = db.Column(db.String(128), default='PC')
     use_bottom_ip = db.Column(db.Boolean, default=1)
     ip_detail = db.Column(db.Text)
@@ -536,6 +544,7 @@ class YzyVoiDesktop(db.Model, SoftDeleteMixin, TimestampMixin):
     default = db.Column(db.Boolean, default=0)
     show_info = db.Column(db.Boolean, default=0)
     auto_update = db.Column(db.Boolean, default=0)
+    diff_mode = db.Column(db.Integer, default=1)
     # data_disk = db.Column(db.Boolean, default=0)
     # data_disk_size = db.Column(db.Integer, default=0)
     # data_disk_type = db.Column(db.Integer, default=0)
@@ -605,6 +614,8 @@ class YzyInstances(db.Model, SoftDeleteMixin, TimestampMixin):
     host_uuid = db.Column(db.String(64), db.ForeignKey("yzy_nodes.uuid"), nullable=False)
     host = db.relationship('YzyNodes', backref=db.backref('host_of_instance'))
     desktop_uuid = db.Column(db.String(64), nullable=False)
+    sys_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
+    data_storage = db.Column(db.String(64), db.ForeignKey("yzy_node_storages.uuid"))
     classify = db.Column(db.Integer, default=1)
     terminal_id = db.Column(db.Integer, nullable=True)
     terminal_mac = db.Column(db.String(32), nullable=True)
@@ -677,6 +688,8 @@ class YzyVoiDeviceInfo(db.Model, SoftDeleteMixin, TimestampMixin):
     size = db.Column(db.Integer, default=0)
     section = db.Column(db.BigInteger, default=0)
     used = db.Column(db.Float, default=0)
+    diff1_ver = db.Column(db.Integer, default=0)
+    diff2_ver = db.Column(db.Integer, default=0)
     progress = db.Column(db.Integer, default=0)
     upload_path = db.Column(db.String(255), default='')
 
@@ -824,6 +837,7 @@ class YzyDatabaseBack(db.Model, SoftDeleteMixin, TimestampMixin):
     size = db.Column(db.Float, nullable=False)
     type = db.Column(db.Integer, default=0)
     status = db.Column(db.Integer, default=0)
+    md5_sum = db.Column(db.String(64), nullable=False)
     # total = db.Column(db.BigInteger, nullable=False)
     # type = db.Column(db.Integer, default=2)
 
@@ -863,7 +877,7 @@ class YzyCrontabDetail(db.Model, SoftDeleteMixin, TimestampMixin):
     hour = db.Column(db.Integer, nullable=True)
     minute = db.Column(db.Integer, nullable=True)
     cycle = db.Column(db.String(10), nullable=True)
-    values = db.Column(db.String(32), nullable=True)
+    values = db.Column(db.Text, nullable=True)
     func = db.Column(db.String(255), nullable=False)
     params = db.Column(db.Text, nullable=True)
 
@@ -972,6 +986,15 @@ class YzyWarningLog(db.Model, SoftDeleteMixin, TimestampMixin):
     content = db.Column(db.String(64), nullable=False)
 
 
+class YzyAuth(db.Model, SoftDeleteMixin, TimestampMixin):
+    __tablename__ = "yzy_auth"
+
+    id = db.Column(db.Integer, primary_key=True)
+    sn = db.Column(db.String(64), nullable=False)
+    organization = db.Column(db.String(255), default='')
+    remark = db.Column(db.String(255), default='')
+
+
 class YzyWarnSetup(db.Model, SoftDeleteMixin, TimestampMixin):
     __tablename__ = "yzy_warn_setup"
 
@@ -999,7 +1022,6 @@ class YzyVoiTerminalToDesktops(db.Model, SoftDeleteMixin, TimestampMixin):
     desktop_is_sent = db.Column(db.Integer, nullable=False, default=0, comment='桌面是否已经下发标志 0-未下发 1-已下发')
 
 
-
 class YzyVoiTerminalShareDisk(db.Model, SoftDeleteMixin, TimestampMixin):
     __tablename__ = "yzy_voi_terminal_share_disk"
     id = db.Column(db.Integer, primary_key=True)
@@ -1009,7 +1031,6 @@ class YzyVoiTerminalShareDisk(db.Model, SoftDeleteMixin, TimestampMixin):
     restore = db.Column(db.Integer, nullable=False, default=0)
     enable = db.Column(db.Integer, nullable=False, default=0)
     version = db.Column(db.Integer, nullable=False, default=0)
-
 
 
 # CREATE TABLE `yzy_voi_share_to_desktops` (
@@ -1024,6 +1045,7 @@ class YzyVoiTerminalShareDisk(db.Model, SoftDeleteMixin, TimestampMixin):
 #   `updated_at` DATETIME DEFAULT NULL,
 #   PRIMARY KEY (`id`)
 # ) ENGINE=INNODB DEFAULT CHARSET=utf8;
+
 
 class YzyVoiShareToDesktops(db.Model, SoftDeleteMixin, TimestampMixin):
     __tablename__ = "yzy_voi_share_to_desktops"
@@ -1044,15 +1066,19 @@ class YzyVoiTorrentTask(db.Model, SoftDeleteMixin, TimestampMixin):
     torrent_name = db.Column(db.String(64), nullable=False, comment='种子名称')
     torrent_path = db.Column(db.String(200), nullable=False, comment='种子路径')
     torrent_size = db.Column(db.Integer, nullable=False, default=0, comment='种子文件大小')
+    desktop_name = db.Column(db.String(32), nullable=False, comment='桌面组名称')
     template_uuid = db.Column(db.String(64), nullable=False, comment='对应模板uuid')
     disk_uuid = db.Column(db.String(64), nullable=False, comment='磁盘uuid')
     disk_name = db.Column(db.String(64), nullable=False, comment='磁盘名称')
+    disk_size = db.Column(db.Float, nullable=False, comment='磁盘文件大小，单位G')
     terminal_mac = db.Column(db.String(32), nullable=False, comment='终端mac')
     terminal_ip = db.Column(db.String(32), nullable=False, comment='终端ip')
     type = db.Column(db.Integer, nullable=False, comment='任务类型，0-上传，1-下载')
     status = db.Column(db.Integer, nullable=False, default=0, comment='任务状态，0-初始状态，1-进行中，2-完成')
     state = db.Column(db.String(32), nullable=False, default="", comment='任务状态')
     process = db.Column(db.Integer, nullable=False, default=0, comment='任务进度')
+    batch_no = db.Column(db.Integer, nullable=False, default=0, comment='任务批次号')
+    sum = db.Column(db.Integer, nullable=False, default=1, comment='批次任务总数')
     download_rate = db.Column(db.Integer, nullable=False, default=0, comment='下载速率')
     deleted = db.Column(db.Integer, nullable=False, default=0, comment='删除标志')
 
@@ -1083,3 +1109,139 @@ class YzyMonitorHalfMin(db.Model, TimestampMixin, SoftDeleteMixin):
     node_datetime = db.Column(db.DateTime, nullable=False, comment='节点监控时间')
     monitor_info = db.Column(db.Text, comment='监控信息json')
     auto = db.Column(db.Integer, default="0", comment='是否为自动补齐，默认补齐为前一条数据')
+
+
+class YzyHaInfo(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_ha_info"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    vip = db.Column(db.String(20), nullable=False)
+    netmask = db.Column(db.String(20), nullable=False)
+    quorum_ip = db.Column(db.String(20), nullable=False)
+    sensitivity = db.Column(db.Integer, nullable=False)
+    master_ip = db.Column(db.String(20), nullable=False)
+    backup_ip = db.Column(db.String(20), nullable=False)
+    master_nic = db.Column(db.String(32), nullable=False)
+    backup_nic = db.Column(db.String(32), nullable=False)
+    master_nic_uuid = db.Column(db.String(64), nullable=False)
+    backup_nic_uuid = db.Column(db.String(64), nullable=False)
+    master_uuid = db.Column(db.String(64), nullable=False)
+    backup_uuid = db.Column(db.String(64), nullable=False)
+    # ha_enable_status = db.Column(db.Integer, nullable=False)
+    # ha_running_status = db.Column(db.Integer, nullable=False)
+    # data_sync_status = db.Column(db.Integer, nullable=False)
+    # master_net_status = db.Column(db.Integer, nullable=False)
+    # backup_net_status = db.Column(db.Integer, nullable=False)
+    # master_heartbeat_ip = db.Column(db.String(20), nullable=False)
+    # backup_heartbeat_ip = db.Column(db.String(20), nullable=False)
+    # heartbeat_netmask = db.Column(db.String(20), nullable=False)
+
+
+class YzyCourseSchedule(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_course_schedule"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    term_uuid = db.Column(db.String(64), nullable=False)
+    group_uuid = db.Column(db.String(64), nullable=False)
+    course_template_uuid = db.Column(db.String(64), nullable=False)
+    week_num = db.Column(db.Integer, nullable=False)
+    course_md5 = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.Integer, nullable=False)
+
+
+class YzyCourseTemplate(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_course_template"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    desktops = db.Column(db.Text, nullable=False)
+
+
+class YzyCourse(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_course"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    course_template_uuid = db.Column(db.String(64), nullable=False)
+    desktop_uuid = db.Column(db.String(64), nullable=False)
+    weekday = db.Column(db.Integer, nullable=False)
+    course_num = db.Column(db.Integer, nullable=False)
+
+
+class YzyTerm(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_term"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    name = db.Column(db.String(32), nullable=False)
+    start = db.Column(db.String(10), nullable=False)
+    end = db.Column(db.String(10), nullable=False)
+    duration = db.Column(db.Integer, nullable=False)
+    break_time = db.Column(db.Integer, nullable=False)
+    morning = db.Column(db.String(5), nullable=False)
+    afternoon = db.Column(db.String(5), nullable=False)
+    evening = db.Column(db.String(5), nullable=False)
+    morning_count = db.Column(db.Integer, nullable=False)
+    afternoon_count = db.Column(db.Integer, nullable=False)
+    evening_count = db.Column(db.Integer, nullable=False)
+    course_num_map = db.Column(db.Text, nullable=False)
+    weeks_num_map = db.Column(db.Text, nullable=False)
+    crontab_task_uuid = db.Column(db.String(64), nullable=False)
+    group_status_map = db.Column(db.Text, nullable=False)
+
+
+class YzyTask(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_task"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    task_uuid = db.Column(db.String(64), nullable=False)
+    name = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.String(20), nullable=False)
+    type = db.Column(db.Integer, default=0)
+
+
+class YzyRemoteStorage(db.Model, TimestampMixin, SoftDeleteMixin):
+    __tablename__ = "yzy_remote_storages"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64))
+    name = db.Column(db.String(32))
+    type = db.Column(db.Integer, default=0)
+    server = db.Column(db.String(100))
+    used = db.Column(db.BigInteger, nullable=True)
+    free = db.Column(db.BigInteger, nullable=True)
+    total = db.Column(db.BigInteger, nullable=True)
+    allocated = db.Column(db.Boolean, default=0)
+    allocated_to = db.Column(db.String(64), db.ForeignKey("yzy_resource_pools.uuid"), nullable=True)
+    role = db.Column(db.String(64), default='')
+
+
+class YzyVoiTerminalPerformance(db.Model, SoftDeleteMixin, TimestampMixin):
+    __tablename__ = "yzy_voi_terminal_performance"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    terminal_uuid = db.Column(db.String(64), nullable=False)
+    terminal_mac = db.Column(db.String(32))
+    cpu_ratio = db.Column(db.Float(4))
+    network_ratio = db.Column(db.Float(4))
+    memory_ratio = db.Column(db.Float(4))
+    cpu_temperature = db.Column(db.Float(4))
+    hard_disk = db.Column(db.Float(4))
+    cpu = db.Column(db.TEXT)
+    memory = db.Column(db.TEXT)
+    network = db.Column(db.TEXT)
+    hard = db.Column(db.TEXT)
+
+
+class YzyVoiTerminalHardWare(db.Model, SoftDeleteMixin, TimestampMixin):
+    __tablename__ = "yzy_voi_terminal_hard_ware"
+
+    id = db.Column(db.Integer, primary_key=True)
+    uuid = db.Column(db.String(64), nullable=False)
+    terminal_uuid = db.Column(db.String(64), nullable=False)
+    terminal_mac = db.Column(db.String(32))
+    content = db.Column(db.TEXT)

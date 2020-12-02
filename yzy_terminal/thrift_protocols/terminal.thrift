@@ -302,6 +302,14 @@ struct TerminalConf {
     18:i32 window_mode; // 1-全屏， 2-全屏可退出 3-全屏不可退出
     19:DisconnectSetup disconnect_setup;//断开服务器连接设置
     20:DisplaySetup show;//是否显示本地桌面按钮图标
+    21:bool hide_tools; // true-隐藏工具条
+    22:string top_level_service_ip;// 顶层服务ip
+    23:string teacher_service_ip;// 教师服务ip
+    24:i32 classroom_num;// 教室编号
+    25:string multicast_ip;// 组播ip
+    26:i32 multicast_port;// 组播port
+
+
 }
 
 // 文件类型决定了文件上传或者下载对应服务器上面存储的路径的配置

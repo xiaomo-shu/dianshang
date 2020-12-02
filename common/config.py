@@ -15,8 +15,8 @@ DEFAULT_CONFIG = [
         ('voi_terminal_bind', '0.0.0.0:50005', 'the voi terminal bind host and port'),
         ('upgrade_bind', '0.0.0.0:50008', 'the upgrade bind host and port'),
         ('workers', '12', 'the default workers'),
-        ('sqlalchemy_database_uri', 'mysql+mysqlconnector://root:123qwe,.@localhost:3306/yzy_kvm_db?charset=utf8',
-         'the db connect info')
+        # ('sqlalchemy_database_uri', 'mysql+mysqlconnector://root:123qwe,.@localhost:3306/yzy_kvm_db?charset=utf8',
+        #  'the db connect info')
     ],
      ),
 
@@ -55,11 +55,11 @@ DEFAULT_CONFIG = [
      ),
 
     # Section: [license]
-    ('license', [
-        ('sn', '', 'the license sn number'),
-        ('org_name', '', 'the license company')
-    ],
-     ),
+    # ('license', [
+    #     ('sn', '', 'the license sn number'),
+    #     ('org_name', '', 'the license company')
+    # ],
+    #  ),
 
     ('company', [
         ('name', '湖南云之翼云管理平台', '平台名称'),

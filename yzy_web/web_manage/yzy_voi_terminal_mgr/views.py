@@ -13,8 +13,8 @@ from web_manage.common import constants
 from web_manage.common.utils import JSONResponse, YzyWebPagination, YzyAuthentication, YzyPermission, \
                                 get_error_result
 from .voi_terminal_manager.voi_terminal_manager import voi_terminal_mgr
-
-
+from ..yzy_terminal_mgr.models import YzyTerminalUpgrade
+from ..yzy_terminal_mgr.serializers import YzyTerminalUpgradeSerializer
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +94,7 @@ class TerminalList(APIView):
         group_uuid = request.GET.get("uuid", "")
         group_type = request.GET.get("type")
         _filter = request.GET.get("filter")
+        status = request.GET.get("status", '-1')
         query_set = YzyVoiTerminal.objects
         if group_uuid:
             group_info = voi_terminal_mgr.get_group_info(group_uuid)
@@ -105,6 +106,8 @@ class TerminalList(APIView):
             query_set = query_set.filter(Q(group_uuid__isnull=True) | Q(group_uuid = '')).order_by("terminal_id")
             group_name = "未分组"
 
+        if status != '-1':
+            query_set = query_set.filter(status=status)
         if _filter:
             query_set = query_set.filter(Q(name__contains=_filter) | Q(ip__contains=_filter))
         terminals = page.paginate_queryset(queryset=query_set, request=request, view=self)
@@ -135,3 +138,27 @@ class TerminalOperate(APIView):
     def post(self, request, *args, **kwargs):
         ret = voi_terminal_mgr.terminal_operate(request)
         return JSONResponse(ret)
+
+
+class TerminalUpgrade(APIView):
+    """
+    VOI文件上传
+    """
+    def get(self, request, *args, **kwargs):
+        try:
+            upgrades = YzyTerminalUpgrade.objects.filter(deleted=False, platform='VOI').order_by("-upload_at")[:10]
+            ser = YzyTerminalUpgradeSerializer(instance=upgrades, many=True, context={'request': request})
+            return JSONResponse(get_error_result("Success", ser.data))
+        except Exception as e:
+            return JSONResponse(get_error_result("OtherError"))
+
+    def post(self, request, *args, **kwargs):
+        # upgrade_package_uuid = request.data.get("upgrade_package_uuid", None)
+        upgrade_file_obj = request.FILES.get("file", None)
+        if not upgrade_file_obj:
+            logger.error("VOI terminal upgrade file upload error")
+            return JSONResponse(get_error_result("TerminalUpgradeFileError"))
+        return JSONResponse(voi_terminal_mgr.upload_upgrade(upgrade_file_obj))
+
+
+

@@ -6,6 +6,7 @@ import random
 import logging
 import base64
 from common import constants
+from common import errcode
 from yzy_terminal_agent.extensions import _redis
 from ctypes import *
 
@@ -49,13 +50,21 @@ class YzyProtocolPaket(Structure):
         # supplementary = self.supplementary
         # token_len = self.token_length
         # offset = token_len + supplementary
-        if self.data_type == YzyProtocolDataType.JSON:
-            data = re.sub('[\n\t]', '', data.decode('utf8'))
-            self.data = data.encode('utf-8')
+        try:
+            if self.data_type == YzyProtocolDataType.JSON:
+                data = re.sub('[\n\t]', '', data.decode('utf8'))
+                self.data = data.encode('utf-8')
+                logger.debug(self.data)
+            else:
+                logger.info("set data: %s, %s"% (len(data), data[:100]))
+                self.data = data
+        except Exception as e:
+            logging.error("yzy protocol error, set data error %s"% data, exc_info=True)
+            if self.data_type == YzyProtocolDataType.JSON:
+                self.data = errcode.get_error_result(error="OtherError", msg='en')
+            else:
+                self.data = b""
             logger.debug(self.data)
-        else:
-            logger.info("set data: %s, %s"% (len(data), data[:100]))
-            self.data = data
 
     def data_json(self):
         ret = dict()
@@ -125,24 +134,26 @@ class YzyTorrentStruct(Structure):
     """
     种子文件结构
     """
-    pass
+    # pass
+    header_str = "<36sbbiqqqq36s36sI"
 
     def format_str(self, data_len):
         data = "%ds"% data_len
-        return "<36sbbiqqqq" + data
+        # return "<36sbbiqqqq36s" + data
+        return self.header_str + data
 
-    def save(self, bin_data, dir_path):
+    def save(self, bin_data):
         head = bin_data[:66]
-        uuid, disk_type, sys_type, dif_level, real_size, reserve_size, data_len = struct.unpack("<36sbbiqqq", head)
+        uuid, disk_type, sys_type, dif_level, real_size, reserve_size, data_len = struct.unpack(self.header_str, head)
         if data_len != len(bin_data[66:]):
             raise Exception("torrent file len error!!!")
         uuid = uuid.decode("utf-8")
         torrent_name = "voi_%s_%s.torrent"% (dif_level, uuid)
-        file_path = os.path.join(dir_path, torrent_name)
-        with open(file_path, "wb") as f:
-            f.write(bin_data[66:])
-        logger.info("torrent: %s save success!!!"% file_path)
-        return file_path
+        # file_path = os.path.join(dir_path, torrent_name)
+        # with open(file_path, "wb") as f:
+        #     f.write(bin_data[66:])
+        logger.info("torrent: %s save success!!!"% torrent_name)
+        return torrent_name, uuid, disk_type, dif_level
 
     # def set_data(self, data):
     #     # supplementary = self.supplementary
@@ -221,9 +232,9 @@ class YzyProtocol:
         """ 释放内存 """
         self.libc.vYzyProtocol_Free(ptr)
 
-    def create_paket(self, service_code, pu_payload, token, sequence_code=None,
+    def create_paket_bake(self, service_code, pu_payload, token, sequence_code=None,
                      encoding = 0, data_type = YzyProtocolDataType.JSON, req_or_res = YzyProtocolType.REQ,
-                     client_type=ClientType.SERVER):
+                     client_type=ClientType.SERVER, supplemenetary=""):
         """ 创建协议数据 """
         if sequence_code is None:
             sequence_code = self.create_seq_code()
@@ -249,16 +260,18 @@ class YzyProtocol:
         logger.debug("data_size: {}".format(data_size))
         return pu_pkt_size.value, msg
 
-    def create_paket_tag(self, service_code, pu_payload, token, sequence_code=None,
+    def create_paket(self, service_code, pu_payload, token, sequence_code=None,
                      encoding = 0, data_type = YzyProtocolDataType.JSON, req_or_res = YzyProtocolType.REQ,
-                     client_type=ClientType.SERVER):
+                     client_type=ClientType.SERVER, supplemenetary=""):
         """ 创建协议数据 """
         if sequence_code is None:
             sequence_code = self.create_seq_code()
         tag = VOI_PROTOCOL_TAG
         version_chief = VOI_VERSION_CHEIF
         version_sub = VOI_VERSION_SUB
-        supplemenetary = 0
+        supplemenetary = ""
+        supplemenetary_len = len(supplemenetary)
+        supplemenetary = supplemenetary.encode("utf-8")
         data_size = len(pu_payload)
         token_len = len(token)
         # pu_pkt_size = c_int()
@@ -281,9 +294,14 @@ class YzyProtocol:
         # fmt = "IHHIIIBBBBHH%ds"% data_size
         # msg = struct.pack(fmt, tag, version_chief, version_sub, service_code, sequence_code, data_size, data_type,
         #                     encoding, client_type, req_or_res, token_len, supplemenetary, pu_payload)
-        fmt = "HHIIIBBBBHH32s%ds"% data_size
+        # if not supplemenetary_len:
+        #     fmt = "<HHIIIBBBBHH%ds%ds"% (token_len, data_size)
+        #     msg = struct.pack(fmt, version_chief, version_sub, service_code, sequence_code, data_size, data_type,
+        #                         encoding, client_type, req_or_res, token_len, supplemenetary_len, token, pu_payload)
+        # else:
+        fmt = "<HHIIIBBBBHH%ds%ds%ds" % (supplemenetary_len, token_len, data_size)
         msg = struct.pack(fmt, version_chief, version_sub, service_code, sequence_code, data_size, data_type,
-                            encoding, client_type, req_or_res, token_len, supplemenetary, token, pu_payload)
+            encoding, client_type, req_or_res, token_len, supplemenetary_len, supplemenetary, token, pu_payload)
         logger.debug("data_size: {}".format(data_size))
         return len(msg), msg
 

@@ -126,7 +126,7 @@ class _ConfigParser(configparser.ConfigParser):
 
 def build_result(errcode, data=None, ext_msg="", **kwargs):
     res = get_error_result(errcode, **kwargs)
-    if data is not None and isinstance(data, (dict, list, str)):
+    if data is not None and isinstance(data, (dict, list, tuple, str, int, float, bool)):
         res.update({"data": data})
     if ext_msg:
         res["msg"] = res["msg"] + " {}".format(ext_msg)
@@ -268,7 +268,7 @@ def get_compute_url(ipaddr):
     return endpoint, url
 
 
-def compute_post(ipaddr, data, timeout=180):
+def compute_post(ipaddr, data, timeout=120):
     endpoint, url = get_compute_url(ipaddr)
     http_client = HTTPClient(endpoint, timeout=timeout)
     headers = {
@@ -337,7 +337,7 @@ def terminal_post(url, data):
     return body
 
 
-def voi_terminal_post(url, data, timeout=20):
+def voi_terminal_post(url, data, timeout=60):
     bind = SERVER_CONF.addresses.get_by_default('voi_terminal_bind', '')
     if bind:
         port = bind.split(':')[-1]
@@ -453,6 +453,7 @@ def bytes_to_section(_bytes):
 
 def section_to_G(section):
     return int(section / 2 / 1024 / 1024)
+
 
 
 if __name__ == "__main__":

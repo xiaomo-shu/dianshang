@@ -44,6 +44,11 @@ def get_controller_node():
                                                            constants.ROLE_MASTER])).first()
     return node
 
+def get_backup_node():
+    node = model_query(YzyNodes).filter(YzyNodes.type.in_([constants.ROLE_SLAVE_AND_COMPUTE,
+                                                           constants.ROLE_SLAVE])).first()
+    return node
+
 
 def get_controller_image():
     nic = model_query(YzyNodeNetworkInfo, YzyInterfaceIp.ip).join(YzyNodes).join(YzyInterfaceIp). \
@@ -52,23 +57,27 @@ def get_controller_image():
     return nic
 
 
-def get_template_sys_storage():
-    storage = model_query(YzyNodeStorages).filter(YzyNodeStorages.role.contains(str(constants.TEMPLATE_SYS))).first()
+def get_template_sys_storage(node_uuid):
+    storage = model_query(YzyNodeStorages).filter(node_uuid == node_uuid).\
+        filter(YzyNodeStorages.role.contains(str(constants.TEMPLATE_SYS))).first()
     return storage
 
 
-def get_template_data_storage():
-    storage = model_query(YzyNodeStorages).filter(YzyNodeStorages.role.contains(str(constants.TEMPLATE_DATA))).first()
+def get_template_data_storage(node_uuid):
+    storage = model_query(YzyNodeStorages).filter(node_uuid == node_uuid).\
+        filter(YzyNodeStorages.role.contains(str(constants.TEMPLATE_DATA))).first()
     return storage
 
 
-def get_instance_sys_storage():
-    storage = model_query(YzyNodeStorages).filter(YzyNodeStorages.role.contains(str(constants.INSTANCE_SYS))).first()
+def get_instance_sys_storage(node_uuid):
+    storage = model_query(YzyNodeStorages).filter(node_uuid == node_uuid).\
+        filter(YzyNodeStorages.role.contains(str(constants.INSTANCE_SYS))).first()
     return storage
 
 
-def get_instance_data_storage():
-    storage = model_query(YzyNodeStorages).filter(YzyNodeStorages.role.contains(str(constants.INSTANCE_DATA))).first()
+def get_instance_data_storage(node_uuid):
+    storage = model_query(YzyNodeStorages).filter(node_uuid == node_uuid).\
+        filter(YzyNodeStorages.role.contains(str(constants.INSTANCE_DATA))).first()
     return storage
 
 
@@ -93,6 +102,16 @@ def get_node_with_first(item):
 
 def get_node_storage_all(item):
     storages = model_query(YzyNodeStorages).filter_by(**item).all()
+    return storages
+
+
+def get_node_storage_first(item):
+    storages = model_query(YzyNodeStorages).filter_by(**item).first()
+    return storages
+
+
+def get_node_storage_by_path(path):
+    storages = model_query(YzyNodeStorages).filter_by(path=path).all()
     return storages
 
 
@@ -131,3 +150,43 @@ def clear_monitor_half_min(last_days):
     now_datatime = dt.datetime.now()
     model_query(YzyMonitorHalfMin).filter(
         YzyMonitorHalfMin.node_datetime < (now_datatime - dt.timedelta(days=last_days))).delete()
+
+
+def select_controller_image_ip():
+    # 1. get controller uuid
+    qry_node = model_query(YzyNodes).filter(YzyNodes.type.in_((1, 3))).first()
+    if qry_node and qry_node.uuid:
+        controller_uuid = qry_node.uuid
+    else:
+        return None
+    qry_node_network_info = model_query(YzyNodeNetworkInfo).filter_by(node_uuid=controller_uuid).all()
+    if qry_node_network_info:
+        uuid_tuple = tuple([x.uuid for x in qry_node_network_info])
+        qry_interface_ip = model_query(YzyInterfaceIp).filter(YzyInterfaceIp.nic_uuid.in_(uuid_tuple))\
+            .filter_by(is_image=1).filter_by(deleted=0)
+        if qry_interface_ip:
+            return qry_interface_ip.first()
+        else:
+            return None
+    else:
+        return None
+
+
+def add_ha_info(values):
+    ha_info = YzyHaInfo()
+    ha_info.update(values)
+    db.session.add(ha_info)
+    db.session.flush()
+
+
+def get_ha_info_by_uuid(ha_uuid):
+    ha_info = model_query(YzyHaInfo).filter_by(uuid=ha_uuid).first()
+    return ha_info
+
+
+def get_ha_info_all():
+    ha_infos = model_query(YzyHaInfo).all()
+    return ha_infos
+
+def get_ha_info_first():
+    return model_query(YzyHaInfo).first()

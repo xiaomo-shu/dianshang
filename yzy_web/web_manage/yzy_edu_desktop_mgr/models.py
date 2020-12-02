@@ -37,6 +37,8 @@ class YzyInstanceTemplate(SoftDeletableModel):
     # subnet = models.ForeignKey(to=resource_model.YzySubnets, to_field='uuid', on_delete=models.CASCADE,
     #                          db_column='subnet_uuid', null=True)
     subnet_uuid = models.CharField(max_length=64)
+    sys_storage = models.CharField(max_length=64)
+    data_storage = models.CharField(max_length=64)
     bind_ip = models.CharField(max_length=32)
     vcpu = models.IntegerField(default=2)
     ram = models.FloatField(default=0)
@@ -121,6 +123,8 @@ class YzyInstances(SoftDeletableModel):
     # desktop = models.ForeignKey(to=YzyDesktop, to_field='uuid', on_delete=models.CASCADE,
     #                          db_column='desktop_uuid', related_name='instances', null=True)
     desktop_uuid = models.CharField(max_length=64)
+    sys_storage = models.CharField(max_length=64)
+    data_storage = models.CharField(max_length=64)
     classify = models.IntegerField(default=1)
     terminal_id = models.IntegerField(null=True)
     terminal_mac = models.CharField(max_length=32, null=True)
@@ -186,3 +190,72 @@ class YzyDeviceModify(SoftDeletableModel):
     class Meta:
         db_table = 'yzy_device_modify'
         ordering = ['id']
+
+
+class YzyCourse(SoftDeletableModel):
+    id = models.IntegerField(primary_key=True)
+    uuid = models.CharField(max_length=64, unique=True)
+    course_template_uuid = models.CharField(max_length=64)
+    desktop_uuid = models.CharField(max_length=64)
+    weekday = models.IntegerField()
+    course_num = models.IntegerField()
+    created_at = models.DateTimeField(null=True, blank=True, auto_now_add=True)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+
+    class Meta:
+        db_table = 'yzy_course'
+
+
+class YzyTerm(SoftDeletableModel):
+    id = models.IntegerField(primary_key=True)
+    uuid = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=32)
+    start = models.CharField(max_length=8)
+    end = models.CharField(max_length=8)
+    duration = models.IntegerField()
+    break_time = models.IntegerField()
+    morning = models.CharField(max_length=5)
+    evening = models.CharField(max_length=5)
+    afternoon = models.CharField(max_length=5)
+    morning_count = models.IntegerField()
+    afternoon_count = models.IntegerField()
+    evening_count = models.IntegerField()
+    course_num_map = models.TextField()
+    weeks_num_map = models.TextField()
+    group_status_map = models.TextField()
+    created_at = models.DateTimeField(null=True, blank=True, auto_now_add=True)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+
+    class Meta:
+        db_table = 'yzy_term'
+
+
+class YzyCourseTemplate(SoftDeletableModel):
+    id = models.IntegerField(primary_key=True)
+    uuid = models.CharField(max_length=64, unique=True)
+    desktops = models.TextField()
+    created_at = models.DateTimeField(null=True, blank=True, auto_now_add=True)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+
+    class Meta:
+        db_table = 'yzy_course_template'
+
+
+class YzyCourseSchedule(SoftDeletableModel):
+    id = models.IntegerField(primary_key=True)
+    uuid = models.CharField(max_length=64, unique=True)
+    term = models.ForeignKey(to=YzyTerm, to_field='uuid', db_column='term_uuid', null=True, on_delete=models.CASCADE,
+                              related_name='yzy_course_schedule')
+    group = models.ForeignKey(to=YzyGroup, to_field='uuid', db_column='group_uuid', null=True, on_delete=models.CASCADE,
+                              related_name='yzy_course_schedule')
+    course_template = models.ForeignKey(to=YzyCourseTemplate, to_field='uuid', db_column='course_template_uuid',
+                                        null=True, on_delete=models.CASCADE, related_name='yzy_course_schedule')
+    week_num = models.IntegerField()
+    status = models.IntegerField()
+    course_md5 = models.TextField()
+    created_at = models.DateTimeField(null=True, blank=True, auto_now_add=True)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+
+    class Meta:
+        db_table = 'yzy_course_schedule'
+

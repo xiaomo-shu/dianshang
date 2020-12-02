@@ -13,8 +13,10 @@ from web_manage.common.http import server_post, terminal_post, voi_terminal_post
 from web_manage.common.log import operation_record, insert_operation_log
 from web_manage.common import constants
 # from web_manage.common.utils import JSONResponse, YzyWebPagination, create_uuid
-from web_manage.common.utils import get_error_result, JSONResponse, YzyWebPagination, is_ip_addr, is_netmask, find_ips,\
-                                    size_to_G, gi_to_section, bytes_to_section
+from web_manage.common.utils import get_error_result, JSONResponse, YzyWebPagination, is_ip_addr, is_netmask, find_ips, \
+    size_to_G, gi_to_section, bytes_to_section, size_to_M, create_uuid
+from web_manage.yzy_terminal_mgr.models import YzyTerminalUpgrade
+from ..serializers import YzyVoiSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -22,18 +24,24 @@ count = 0
 
 
 class VoiTerminalManager(object):
-
     system_type_dict = {
-            "windows_7_x64": 1,
-            "windows_7": 2,
-            "windows_10": 3,
-            "windows_10_x64": 4,
-            "other": 0
-        }
+        "windows_7_x64": 1,
+        "windows_7": 2,
+        "windows_10": 3,
+        "windows_10_x64": 4,
+        "other": 0
+    }
 
     def get_object_by_uuid(self, model, uuid):
         try:
             obj = model.objects.filter(deleted=False).get(uuid=uuid)
+            return obj
+        except Exception as e:
+            return None
+
+    def get_object_by_name(self, model, name):
+        try:
+            obj = model.objects.filter(deleted=False).get(name=name)
             return obj
         except Exception as e:
             return None
@@ -44,10 +52,10 @@ class VoiTerminalManager(object):
             if _filter:
                 filter_dict = dict()
                 for k, v in _filter.items():
-                    if isinstance(v, (str,int)):
+                    if isinstance(v, (str, int)):
                         filter_dict[k] = v
                     if isinstance(v, list):
-                        filter_dict["%s__in"% k] = v
+                        filter_dict["%s__in" % k] = v
                 query = query.filter(**filter_dict)
             # import pdb; pdb.set_trace()
             if all:
@@ -68,7 +76,6 @@ class VoiTerminalManager(object):
             data_dir = os.path.join(data_storage.path, "datas")
         sys_base, data_base = os.path.join(sys_dir, "_base"), os.path.join(data_dir, "_base")
         return sys_base, data_base
-
 
     def get_terminal_mac_name_list(self, data):
         terminals = data.get("terminals", [])
@@ -99,7 +106,7 @@ class VoiTerminalManager(object):
             all_groups = self.get_all_object(YzyVoiGroup, {"group_type": group_type})
         for group in all_groups:
             groups.append({"uuid": group.uuid, "name": group.name})
-        groups.append({"uuid":"", "name": "未分组"})
+        groups.append({"uuid": "", "name": "未分组"})
         return get_error_result("Success", groups)
 
     def get_edu_group_name(self):
@@ -123,11 +130,11 @@ class VoiTerminalManager(object):
         for group in groups:
             _d = {"name": group.name, "uuid": group.uuid, "type": group.group_type, "count": 0}
             for terminal in terminals:
-                if terminal.group_uuid  == group.uuid:
+                if terminal.group_uuid == group.uuid:
                     _d["count"] += 1
                     count += 1
             data.append(_d)
-        data.sort(key=lambda x:x["type"])
+        data.sort(key=lambda x: x["type"])
         if not group_type or str(group_type) == "0":
             data.append({"name": "未分组", "uuid": "", "type": 0, "count": sum - count})
         ret = get_error_result("Success")
@@ -158,10 +165,10 @@ class VoiTerminalManager(object):
             return False
         try:
             assert mode["show_desktop_type"] in (0, 1, 2), "show desktop type"
-            assert mode["auto_desktop"] >= 0 , "auto desktop"
+            assert mode["auto_desktop"] >= 0, "auto desktop"
             assert is_ip_addr(program["server_ip"]), "server ip"
         except Exception as e:
-            logger.error("%s"% str(e), exc_info=True)
+            logger.error("%s" % str(e), exc_info=True)
             return False
         return True
 
@@ -205,10 +212,10 @@ class VoiTerminalManager(object):
         msg = "唤醒终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal start fail: %s"% mac_list_str)
+            logger.error("terminal start fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal start success!!! %s"% mac_list_str)
+        logger.info("terminal start success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def shutdown_terminal(self, data):
@@ -233,10 +240,10 @@ class VoiTerminalManager(object):
         msg = "关闭终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal close fail: %s"% mac_list_str)
+            logger.error("terminal close fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal close success!!! %s"% mac_list_str)
+        logger.info("terminal close success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def reboot_terminal(self, data):
@@ -287,10 +294,10 @@ class VoiTerminalManager(object):
         msg = "删除终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal delete fail: %s"% mac_list_str)
+            logger.error("terminal delete fail: %s" % mac_list_str)
             return get_error_result("TerminalDeleteOperateError")
 
-        logger.info("terminal delete success!!! %s"% mac_list_str)
+        logger.info("terminal delete success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def get_setup_terminal(self, data):
@@ -306,12 +313,13 @@ class VoiTerminalManager(object):
             terminal_mac = terminal["mac"]
             terminal_obj = self.get_all_object(YzyVoiTerminal, {"mac": terminal_mac}, False)
             if not terminal_obj:
-                logger.error("terminal setup get error: %s terminal not exist"% terminal_mac)
+                logger.error("terminal setup get error: %s terminal not exist" % terminal_mac)
                 return get_error_result("TerminalNotExistError")
             try:
                 setup_info = json.loads(terminal_obj.setup_info)
+                setup_info["program"]["resolutions"] = setup_info["program"].get("resolutions", "").split(",")
             except:
-                logger.error("terminal setup get error: setup_info  %s error"% terminal_obj.setup_info)
+                logger.error("terminal setup get error: setup_info  %s error" % terminal_obj.setup_info)
                 return get_error_result("TerminalSetupInfoError")
 
             if "server_port" in setup_info["program"]:
@@ -324,16 +332,32 @@ class VoiTerminalManager(object):
                 if mac not in mac_list:
                     mac_list.append(mac)
             terminal_objs = self.get_all_object(YzyVoiTerminal, {"mac": mac_list})
+            server_ip = ""
             try:
+                resolutions = list()
+                screen_resolutions = list()
                 for terminal in terminal_objs:
                     setup_info = json.loads(terminal.setup_info)
                     server_ip = setup_info["program"]["server_ip"]
+                    _screen_resolution = setup_info["program"].get("screen_resolution")
+                    if _screen_resolution:
+                        screen_resolutions.append(_screen_resolution)
+                    _resolutions = setup_info["program"].get("resolutions","").split(",")
+                    if _resolutions:
+                        resolutions.extend(list(set(_resolutions)))
+                    # if not resolutions:
+                screen_resolution = screen_resolutions[0] if len(list(set(screen_resolutions))) == 1 else ""
+                resolution_dict = { i : resolutions.count(i) for i in resolutions}
             except Exception as e:
                 logger.error("", exc_info=True)
                 return get_error_result("TerminalSetupInfoError")
+
+            select_resolutions = [i for i, c in resolution_dict.items() if c == len(terminals)]
             data = {
                 "program": {
                     "server_ip": server_ip,
+                    "screen_resolution" : screen_resolution,
+                    "resolutions" : select_resolutions
                 }
             }
             ret = get_error_result("Success", data)
@@ -352,6 +376,12 @@ class VoiTerminalManager(object):
                 },
                 "program": {
                     "server_ip": "172.16.1.33"
+                },
+                "teach_config": {
+                    "room_num": 1,
+                    "teach_pc_ip": "192.168.2.23",
+                    "top_server_ip": "172.16.1.33",
+                    "channel_num": 10
                 }
             }
         }
@@ -442,7 +472,7 @@ class VoiTerminalManager(object):
         # 判断组的存在
         group = self.get_object_by_uuid(YzyVoiGroup, group_uuid)
         if not group:
-            logger.error("terminal sort number error: %s group not exist"% group_uuid)
+            logger.error("terminal sort number error: %s group not exist" % group_uuid)
             return get_error_result("TerminalWebGroupNotExist")
 
         req_data = {
@@ -492,7 +522,21 @@ class VoiTerminalManager(object):
         """ 按序重排ip
         """
         terminals = data.get("terminals", [])
+        modify_ip_method = data.get("modify_ip_method")
         group_uuid = data.get("group_uuid", "")
+        if modify_ip_method == "dhcp":
+            req_data = {
+                "handler": "WebTerminalHandler",
+                "command": "modify_ip",
+                "data": {
+                    "group_uuid": group_uuid,
+                    "modify_ip_method": modify_ip_method,
+                }
+            }
+            logger.debug("Use dhcp to modify group's %s terminals" % group_uuid)
+            ret = voi_terminal_post("/api/v1/voi/terminal/command", req_data)
+            return ret
+
         start_ip = data.get("start_ip")
         netmask = data.get("netmask")
         gateway = data.get("gateway")
@@ -531,6 +575,7 @@ class VoiTerminalManager(object):
         terminals = self.get_all_object(YzyVoiTerminal, {"group_uuid": group_uuid}).order_by("terminal_id")
         name_list = list()
         mac_list = list()
+        ips = list()
         for terminal in terminals:
             mac = terminal.mac
             name = terminal.name
@@ -538,16 +583,21 @@ class VoiTerminalManager(object):
                 mac_list.append(mac)
             if name not in name_list:
                 name_list.append(name)
+            # 没排序的终端不进行重排IP操作
+            if terminal.terminal_id == -1:
+                return get_error_result("TerminalNotSortError")
 
-        start_num = int(start_ip.split(".")[-1])
-        end_num = start_num + len(terminals) - 1
-        if end_num > 254:
-            logger.error("terminal modify sort ip error")
-            return get_error_result("TerminalSortIpError")
-        _ip = start_ip.split(".")
-        _ip[-1] = str(end_num)
-        end_ip = ".".join(_ip)
-        ips = find_ips(start_ip, end_ip)
+            ips.append(ip_resources[terminal.terminal_id - 1].exploded)
+
+        # start_num = int(start_ip.split(".")[-1])
+        # end_num = start_num + len(terminals) - 1
+        # if end_num > 254:
+        #     logger.error("terminal modify sort ip error")
+        #     return get_error_result("TerminalSortIpError")
+        # _ip = start_ip.split(".")
+        # _ip[-1] = str(end_num)
+        # end_ip = ".".join(_ip)
+        # ips = find_ips(start_ip, end_ip)
         ips_str = ",".join(ips)
         mac_list_str = ",".join(mac_list)
         req_data = {
@@ -611,7 +661,7 @@ class VoiTerminalManager(object):
         ret = get_error_result("Success")
         msg = "移动终端: %s 到 %s 分组" % ("/".join(name_list), group.name if group else "未分组")
         insert_operation_log(msg, ret["msg"])
-        logger.info("terminal move success !!!!" )
+        logger.info("terminal move success !!!!")
         return ret
 
     def enter_maintenance_mode_terminal(self, data):
@@ -636,10 +686,10 @@ class VoiTerminalManager(object):
         msg = "enter_maintenance_mode 终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal enter_maintenance_mode fail: %s"% mac_list_str)
+            logger.error("terminal enter_maintenance_mode fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal enter_maintenance_mode success!!! %s"% mac_list_str)
+        logger.info("terminal enter_maintenance_mode success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def clear_all_desktop_terminal(self, data):
@@ -664,10 +714,10 @@ class VoiTerminalManager(object):
         msg = "clear_all_desktop 终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal clear_all_desktop fail: %s"% mac_list_str)
+            logger.error("terminal clear_all_desktop fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal clear_all_desktop success!!! %s"% mac_list_str)
+        logger.info("terminal clear_all_desktop success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     # def download_desktop_terminal(self, data):
@@ -760,10 +810,10 @@ class VoiTerminalManager(object):
         msg = "get_data_disk_setup  %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal get_data_disk_setup fail: %s"% mac_list_str)
+            logger.error("terminal get_data_disk_setup fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal get_data_disk_setup success!!! %s"% mac_list_str)
+        logger.info("terminal get_data_disk_setup success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def update_data_disk_setup_terminal(self, data):
@@ -800,10 +850,10 @@ class VoiTerminalManager(object):
         msg = "update_data_disk_setup 终端 %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal update_data_disk_setup fail: %s"% mac_list_str)
+            logger.error("terminal update_data_disk_setup fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal update_data_disk_setup success!!! %s"% mac_list_str)
+        logger.info("terminal update_data_disk_setup success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def send_desktop_terminal(self, data):
@@ -830,61 +880,66 @@ class VoiTerminalManager(object):
         mac_list_str = ",".join(mac_list)
         desktop_uuid = data.get("desktop_uuid", "")
         desktop_name = data.get("desktop_name", "")
-        sys_reserve_size = data.get("sys_reserve_size", 20)
-        data_reserve_size = data.get("sys_reserve_size", 20)
+        # sys_reserve_size = data.get("sys_reserve_size", 20)
+        # data_reserve_size = data.get("sys_reserve_size", 20)
 
         desktop = self.get_object_by_uuid(YzyVoiDesktop, desktop_uuid)
         sys_base, data_base = self.get_node_storage()
         template = desktop.template
         devices = self.get_all_object(YzyVoiDeviceInfo, {"instance_uuid": template.uuid})
-        operates = self.get_all_object(YzyVoiTemplateOperate, {"template": template.uuid, "exist": 1})
+        operates = self.get_all_object(YzyVoiTemplateOperate, {"template": template.uuid, "exist": True})
         disks = list()
         for dev in devices:
             if dev.type == constants.IMAGE_TYPE_SYSTEM:
                 _t = 0
                 base_dir = sys_base
                 restore_flag = desktop.sys_restore
-                reserve_size_input = sys_reserve_size
+                reserve_size_input = desktop.sys_reserve_size
             else:
                 _t = 1
                 restore_flag = desktop.data_restore
                 base_dir = data_base
-                reserve_size_input = data_reserve_size
-            base_name = "voi_0_%s"% dev.uuid
+                reserve_size_input = desktop.data_reserve_size
+            base_name = "voi_0_%s" % dev.uuid
             base_file = os.path.join(base_dir, base_name)
             real_size = str(dev.section) if dev.section else str(gi_to_section(dev.size))
             # reserve_size = str(bytes_to_section(os.path.getsize(base_file)))
-            reserve_size = str(gi_to_section(100))
+            reserve_size = str(gi_to_section(reserve_size_input))
+            max_diff = template.version if template.version <= constants.IMAGE_COMMIT_VERSION else constants.IMAGE_COMMIT_VERSION
             disks.append({
-                "uuid" : dev.uuid, "type": _t, "prefix": "voi", "dif_level": 0,
-                "real_size":  real_size, "reserve_size": reserve_size,
-                "torrent_file": base_file + ".torrent", "restore_flag": restore_flag, "max_dif": template.version
+                "uuid": dev.uuid, "type": _t, "prefix": "voi", "dif_level": 0,
+                "real_size": real_size, "reserve_size": reserve_size,
+                "torrent_file": base_file + ".torrent", "max_dif": max_diff, "operate_id": 0
             })
             for oper in operates:
-                disk_name = "voi_%s_%s"% (oper.version, dev.uuid)
+                if oper.version == 1:
+                    operate_id = dev.diff1_ver
+                else:
+                    operate_id = dev.diff2_ver
+
+                disk_name = "voi_%s_%s" % (oper.version, dev.uuid)
                 disk_path = os.path.join(base_dir, disk_name)
-                # section = str(dev.section) if dev.section else str(dev.size * 1024 * 1024 * 2)
-                # reserve_size = str(bytes_to_section(os.path.getsize(disk_path)) + gi_to_section(100)) # 加5G
-                reserve_size = str(gi_to_section(100)) # 加5G
-                disks.append({
-                    "uuid": dev.uuid, "type": _t, "prefix": "voi", "dif_level": oper.version,
-                    "real_size": real_size, "reserve_size": reserve_size,
-                    "torrent_file": disk_path + ".torrent", "restore_flag": restore_flag, "max_dif": template.version
-                })
+                torrent_file = disk_path + ".torrent"
+                if os.path.exists(disk_path):
+                    disks.append({
+                        "uuid": dev.uuid, "type": _t, "prefix": "voi", "dif_level": oper.version,
+                        "real_size": real_size, "reserve_size": reserve_size,
+                        "torrent_file": torrent_file, "max_dif": max_diff, "operate_id": operate_id
+                    })
         # 是否有数据盘
-        share_disk_bind = self.get_all_object(YzyVoiShareToDesktops, {"desktop_uuid" : desktop_uuid}, False)
+        share_disk_bind = self.get_all_object(YzyVoiShareToDesktops, {"desktop_uuid": desktop_uuid}, False)
         if share_disk_bind:
             share_disk = self.get_object_by_uuid(YzyVoiTerminalShareDisk, share_disk_bind.disk_uuid)
             if share_disk and share_disk.enable:
                 # back_dir =
-                base_name = (constants.VOI_SHARE_BASE_PREFIX % share_disk.version) + share_disk.uuid
-                base_file =  os.path.join(sys_base, base_name)
-                reserve_size = str(bytes_to_section(os.path.getsize(base_file)))
+                base_name = (constants.VOI_SHARE_BASE_PREFIX % str(0)) + share_disk.uuid
+                base_file = os.path.join(sys_base, base_name)
+                reserve_size = str(gi_to_section(share_disk.disk_size))
                 disks.append({
                     "uuid": share_disk.uuid, "type": 2, "prefix": "voi", "dif_level": 0,
                     "reserve_size": reserve_size, "real_size": str(gi_to_section(share_disk.disk_size)),
-                    "torrent_file": base_file + ".torrent", "restore_flag" : share_disk.restore,
-                    "max_dif": share_disk.version
+                    "torrent_file": base_file + ".torrent", "restore_flag": share_disk.restore,
+                    "max_dif": 0, "operate_id": share_disk.version
                 })
 
         # use_bottom_ip = desktop.use_bottom_ip
@@ -914,7 +969,7 @@ class VoiTerminalManager(object):
             "desktop_group_status": int(desktop.active),
             "default_desktop_group": True if desktop.default else False,
             "os_sys_type": self.system_type_dict[desktop.os_type.lower()],
-            "desktop_name": "%s-"% desktop.prefix,
+            "desktop_name": "%s-" % desktop.prefix,
             "template_uuid": template.uuid,
             "sys_restore": desktop.sys_restore,
             "data_restore": desktop.data_restore,
@@ -925,6 +980,7 @@ class VoiTerminalManager(object):
             "desktop_gateway": "",
             "desktop_dns1": "",
             "desktop_dns2": "",
+            "diff_mode": desktop.diff_mode
         })
         _desktop["disks"] = disks
         # 提交终端服务接口
@@ -940,13 +996,14 @@ class VoiTerminalManager(object):
         }
 
         ret = voi_terminal_post("/api/v1/voi/terminal/command/", req_data)
-        msg = "下发桌面%s 终端 %s" %(desktop_name, "/".join(name_list))
+        msg = "下发桌面%s 终端 %s" % (desktop_name, "/".join(name_list))
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
             logger.error("send_desktop_terminal fail: %s, ret: %s" % (mac_list, ret))
             return ret
 
-        logger.info("send_desktop_terminal success!!! %s, success: %s, fail: %s" % (mac_list_str, success_num, fail_num))
+        logger.info(
+            "send_desktop_terminal success!!! %s, success: %s, fail: %s" % (mac_list_str, success_num, fail_num))
         return get_error_result("Success")
 
     def cancel_send_desktop_terminal(self, data):
@@ -969,10 +1026,10 @@ class VoiTerminalManager(object):
         msg = "cancel_send_desktop %s" % "/".join(name_list)
         insert_operation_log(msg, ret["msg"])
         if ret.get("code", -1) != 0:
-            logger.error("terminal close fail: %s"% mac_list_str)
+            logger.error("terminal close fail: %s" % mac_list_str)
             return ret
 
-        logger.info("terminal close success!!! %s"% mac_list_str)
+        logger.info("terminal close success!!! %s" % mac_list_str)
         return get_error_result("Success")
 
     def get_share_disk_terminal(self, data):
@@ -980,7 +1037,7 @@ class VoiTerminalManager(object):
         group_uuid = data.get("group_uuid", "")
         group = self.get_object_by_uuid(YzyVoiGroup, group_uuid)
         if not group:
-            logger.error("get terminal share disk group %s not exist"% group_uuid)
+            logger.error("get terminal share disk group %s not exist" % group_uuid)
             return get_error_result("TerminalWebGroupNotExist")
         desktops = self.get_all_object(YzyVoiDesktop, {"group": group_uuid})
         share_disk = self.get_all_object(YzyVoiTerminalShareDisk, {"group_uuid": group_uuid}, False)
@@ -990,12 +1047,12 @@ class VoiTerminalManager(object):
             data = {
                 "group_uuid": group_uuid,
                 "disk_size": constants.VOI_SHARE_DISK_MIN,  # 共享盘大小
-                "enable" : 0,    # 是否启用
-                "restore": 0     # 还原与不还原
+                "enable": 0,  # 是否启用
+                "restore": 0  # 还原与不还原
             }
             ret_json = server_post("/api/v1/voi/terminal/share_disk/create", data)
             if ret_json.get("code", -1) != 0:
-                logger.error("get terminal share disk create fail group %s"% group_uuid)
+                logger.error("get terminal share disk create fail group %s" % group_uuid)
                 return ret_json
             data["uuid"] = ret_json["data"]["uuid"]
             share_desktop = list()
@@ -1043,7 +1100,7 @@ class VoiTerminalManager(object):
         group_uuid = data.get("group_uuid", "")
         group = self.get_object_by_uuid(YzyVoiGroup, group_uuid)
         if not group:
-            logger.error("get terminal share disk group %s not exist"% group_uuid)
+            logger.error("get terminal share disk group %s not exist" % group_uuid)
             return get_error_result("TerminalWebGroupNotExist")
         desktops = self.get_all_object(YzyVoiDesktop, {"group": group_uuid})
         share_disk = self.get_all_object(YzyVoiTerminalShareDisk, {"group_uuid": group_uuid, "uuid": disk_uuid}, False)
@@ -1059,5 +1116,118 @@ class VoiTerminalManager(object):
         logger.info("update terminal share disk : {}" % data)
         return get_error_result("Success", data=data)
 
+    # VOI文件上传
+    def upload_upgrade(self, upgrade_file_obj):
+
+        uuid = create_uuid()
+        upgrade_file_name = upgrade_file_obj.name
+        database_file_obj = self.get_object_by_name(YzyTerminalUpgrade, upgrade_file_name)
+
+        # 判断文件名称platform,os_name,version
+        try:
+            platform, os_name, version = os.path.splitext(upgrade_file_name)[0].split("_")
+            version_split = version.split(".")
+            for i in version_split:
+                if not i.isdigit():
+                    raise Exception(" version error")
+            if platform != 'VOI':
+                raise Exception("platform is not VOI")
+            if os_name.lower() not in ("windows", "linux", "uefi"):
+                raise Exception("os error : %s" % os_name)
+
+        except Exception as e:
+            logger.error("", exc_info=True)
+            return get_error_result("VoiTerminalUpgradeNameError")
+
+        if database_file_obj and database_file_obj.path and os.path.exists(database_file_obj.path):
+            os.remove(database_file_obj.path)
+
+        # upgrade_dir服务器的路径
+        upgrade_dir = constants.TERMINAL_UPGRADE_PATH
+        if not os.path.exists(upgrade_dir):
+            os.makedirs(upgrade_dir)
+        file_path = os.path.join(upgrade_dir, upgrade_file_name)
+        size = 0
+        with open(file_path, "wb+") as f:
+            for chunk in upgrade_file_obj.chunks():
+                f.write(chunk)
+                size += len(chunk)
+            f.close()
+        if database_file_obj:
+            database_file_obj.version = version
+            database_file_obj.path = file_path
+            database_file_obj.size = size_to_M(size)
+            database_file_obj.upload_at = datetime.datetime.now()
+            database_file_obj.updated_at = datetime.datetime.now()
+            database_file_obj.save()
+            return get_error_result('Success')
+        data = {
+            "uuid": uuid,
+            "name": upgrade_file_name,
+            "platform": platform,
+            'os': os_name,
+            'version': version,
+            "path": file_path,
+            "size": size_to_M(size),
+            "upload_at": datetime.datetime.now(),
+        }
+        ser = YzyVoiSerializer(data=data)
+        if ser.is_valid():
+            logger.info("save upgrade file info to db")
+            ser.save()
+            return get_error_result('Success', data=ser.data)
+
+    def upgrade_terminal(self, data):
+        """ 终端升级 """
+        all = data.get("all")
+        group_uuid = data.get("group_uuid")
+        upgrade_uuid = data.get("upgrade_uuid")
+        upgrade = self.get_object_by_uuid(YzyTerminalUpgrade, upgrade_uuid)
+        if all:
+            terminals = self.get_all_object(YzyVoiTerminal, {"group_uuid": group_uuid})
+            mac_list = list()
+            name_list = list()
+            for terminal in terminals:
+                mac = terminal.mac
+                # if upgrade.platform == terminal.platform:
+                if mac not in mac_list:
+                    mac_list.append(mac)
+                    name_list.append(terminal.name)
+        else:
+            try:
+                mac_list, name_list = self.get_terminal_mac_name_list(data)
+            except Exception as e:
+                logger.error("", exc_info=True)
+                return get_error_result("ParamError")
+            terminals = self.get_all_object(YzyVoiTerminal, {"mac": mac_list})
+            # for terminal in terminals:
+            #     if terminal.platform.lower() != upgrade.platform.lower():
+            #         mac_list.remove(terminal.mac)
+        if not mac_list:
+            logger.error("NO need upgrade terminals")
+            return get_error_result("TerminalUpgradeNotNeedError")
+
+        upgrade_pig = upgrade.path
+        if not os.path.exists(upgrade_pig):
+            return get_error_result("TerminalUpgradeFileError")
+
+        req_data = {
+            "handler": "WebTerminalHandler",
+            "command": "terminal_upgrade",
+            "data": {
+                "mac_list": ",".join(mac_list),
+                "upgrade_package": upgrade_pig
+            }
+        }
+        ret = voi_terminal_post("/api/v1/voi/terminal/command/", req_data)
+        # msg = "移动终端: %s 到 %s 分组" % ("/".join(name_list), group.name)
+        # insert_operation_log(msg, ret["msg"])
+
+        if ret.get("code", -1) != 0 :
+            logger.error("terminal upgrade error: %s"% ret["msg"])
+            return ret
+
+        logger.info("terminal upgrade success!!! %s" % ("/".join(name_list)))
+        return get_error_result("Success")
 
 voi_terminal_mgr = VoiTerminalManager()

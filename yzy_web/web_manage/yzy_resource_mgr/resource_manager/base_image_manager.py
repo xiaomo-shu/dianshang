@@ -4,16 +4,19 @@ import shutil
 import hashlib
 import subprocess
 from shutil import copyfile, move
-
+from threading import  Thread
 from rest_framework import status
 from web_manage.yzy_resource_mgr.serializers import *
 from web_manage.yzy_resource_mgr.models import *
-from web_manage.yzy_edu_desktop_mgr.models import YzyInstanceTemplate, YzyInstanceDeviceInfo
-from web_manage.yzy_voi_edu_desktop_mgr.models import YzyVoiTemplate, YzyVoiDeviceInfo
+from web_manage.yzy_edu_desktop_mgr.models import YzyInstanceTemplate, YzyInstanceDeviceInfo, YzyDesktop
+from web_manage.yzy_voi_edu_desktop_mgr.models import YzyVoiTemplate, YzyVoiDeviceInfo, YzyVoiDesktop
 from web_manage.common.http import server_post
 from web_manage.common import constants
 from web_manage.common.log import operation_record, insert_operation_log
-from web_manage.common.utils import get_error_result, JSONResponse, is_ip_addr, create_uuid, size_to_G, size_to_M
+from web_manage.common.utils import get_error_result, JSONResponse, is_ip_addr, \
+    create_uuid, size_to_G, size_to_M
+from web_manage.yzy_system_mgr.models import YzyTask
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,7 @@ class BaseImageManager(object):
             return None
 
     def _get_template_storage_path(self):
-        template_sys = YzyNodeStorages.objects.filter(role__contains='1').first()
+        template_sys = YzyNodeStorages.objects.filter(role__contains='%s' % constants.TEMPLATE_SYS).first()
         if not template_sys:
             sys_base = constants.DEFAULT_SYS_PATH
         else:
@@ -117,16 +120,21 @@ class BaseImageManager(object):
             return JSONResponse(get_error_result("OtherError"))
         return JSONResponse(ser.data)
 
-    def upload(self, file_obj, name, os_type, resource_pool, request):
+    def upload(self, file_obj, name, os_type, resource_pool, request, image_name=None):
         base_image = self.get_object_by_name(YzyBaseImages, name)
+        task = YzyTask.objects.filter(deleted=False, task_uuid=image_name).first()
         if base_image:
             logger.error("base image name repeat error")
             ret = get_error_result("BaseImageNameRepeatError")
+            task.status = constants.TASK_ERROR
+            task.save()
             return JSONResponse(ret)
 
         if os_type not in self.os_types:
             logger.error("base image os_type error: %s", os_type)
             ret = get_error_result("BaseImageOsTypeError")
+            task.status = constants.TASK_ERROR
+            task.save()
             return JSONResponse(ret)
 
         # 保存上传基础镜像文件
@@ -134,9 +142,10 @@ class BaseImageManager(object):
         if not file_obj:
             logger.error("base image upload fail")
             ret = get_error_result("BaseImageFileError")
+            task.status = constants.TASK_ERROR
+            task.save()
             return JSONResponse(ret)
 
-        image_name = create_uuid()
         base_path = self._get_template_storage_path()
         try:
             os.makedirs(base_path)
@@ -166,6 +175,8 @@ class BaseImageManager(object):
             logger.error("save base image error", exc_info=True)
             if os.path.exists(path):
                 os.remove(path)
+                task.status = constants.TASK_ERROR
+                task.save()
             return JSONResponse(get_error_result("BaseImageSaveError"))
         # 判断md5值
         _md5 = os_info.get("md5", "")
@@ -174,6 +185,8 @@ class BaseImageManager(object):
             # 删除镜像
             os.remove(path)
             ret = get_error_result("BaseImageMd5Error")
+            task.status = constants.TASK_ERROR
+            task.save()
             return JSONResponse(ret)
 
         data = {
@@ -191,6 +204,8 @@ class BaseImageManager(object):
             "disk": int(os_info['disk'])
         }
 
+        task.status = constants.TASK_COMPLETE
+        task.save()
         return JSONResponse(data)
 
     def delete(self, resource_pool_uuid, uuids):
@@ -249,12 +264,20 @@ class BaseImageManager(object):
             if ins:
                 ins.os_type = os_type
                 ins.save()
+                desktops = YzyDesktop.objects.filter(template=ins.uuid, deleted=0).all()
+                for desktop in desktops:
+                    desktop.os_type = os_type
+                    desktop.save()
         results = YzyVoiDeviceInfo.objects.filter(image_id=base_image.uuid, deleted=0).all()
         for item in results:
             ins = YzyVoiTemplate.objects.filter(uuid=item.instance_uuid, deleted=0).first()
             if ins:
                 ins.os_type = os_type
                 ins.save()
+                desktops = YzyVoiDesktop.objects.filter(template=ins.uuid, deleted=0).all()
+                for desktop in desktops:
+                    desktop.os_type = os_type
+                    desktop.save()
         base_image.save()
         return get_error_result("Success")
 
@@ -268,7 +291,9 @@ class BaseImageManager(object):
         """
         node = self.get_object_by_uuid(YzyNodes, node_uuid)
         base_image = self.get_object_by_uuid(YzyBaseImages, image_uuid)
-        data = {}
+        if not base_image:
+            return get_error_result("ResourceImageNotExist")
+        data = dict()
         data["ipaddr"] = node.ip
         data["image_path"] = base_image.path
         data["image_id"] = image_uuid
@@ -276,10 +301,11 @@ class BaseImageManager(object):
         ret = server_post("/resource_pool/images/resync", data)
         return ret
 
+
 base_image_mgr = BaseImageManager()
 
 
-class IsoManager():
+class IsoManager(object):
 
     def get_object_by_name(self, model, name):
         try:
@@ -339,7 +365,7 @@ class IsoManager():
             logger.error("upload ISO file: %s is exist", file_name)
             return JSONResponse(get_error_result("ISOFileExistError"))
 
-        template_sys = YzyNodeStorages.objects.filter(role__contains='2').first()
+        template_sys = YzyNodeStorages.objects.filter(role__contains='%s' % constants.TEMPLATE_DATA).first()
         if not template_sys:
             data_base = constants.DEFAULT_DATA_PATH
         else:
@@ -372,9 +398,21 @@ class IsoManager():
             if returncode != 0:
                 return JSONResponse(get_error_result("ISOFileUploadError"))
             logger.info("upload iso file: %s exchange to iso type: %s", file_name, returncode)
+
+            md5_sum = hashlib.md5()
+            with open(path, 'rb') as f:
+                while True:
+                    chunk = f.read(constants.CHUNKSIZE)
+                    if not chunk:
+                        break
+                    md5_sum.update(chunk)
         else:
             pass
             # move(tmp_path, path)
+
+        # 如果启用了HA，把ISO库文件同步给备控，未启用则不同步
+        task = Thread(target=server_post, args=('/controller/ha_sync_web_post', {"paths": [path]},))
+        task.start()
 
         data = {
             "uuid": uuid,

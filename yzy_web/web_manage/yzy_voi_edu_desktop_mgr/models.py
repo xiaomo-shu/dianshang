@@ -10,6 +10,7 @@ class YzyVoiTemplate(SoftDeletableModel):
     os_type = models.CharField(max_length=32)
     desc = models.TextField()
     owner_id = models.CharField(max_length=24)
+    terminal_mac = models.CharField(max_length=64)
     node = models.ForeignKey(to=resource_model.YzyNodes, to_field='uuid', on_delete=models.CASCADE,
                              db_column='host_uuid', null=True)
     network = models.ForeignKey(to=resource_model.YzyNetworks, to_field='uuid', on_delete=models.CASCADE,
@@ -18,6 +19,8 @@ class YzyVoiTemplate(SoftDeletableModel):
     # subnet = models.ForeignKey(to=resource_model.YzySubnets, to_field='uuid', on_delete=models.CASCADE,
     #                          db_column='subnet_uuid', null=True)
     subnet_uuid = models.CharField(max_length=64)
+    sys_storage = models.CharField(max_length=64)
+    data_storage = models.CharField(max_length=64)
     bind_ip = models.CharField(max_length=32)
     vcpu = models.IntegerField(default=2)
     ram = models.FloatField(default=0)
@@ -62,6 +65,7 @@ class YzyVoiGroup(SoftDeletableModel):
     enabled = models.BooleanField(default=True)
     start_ip = models.GenericIPAddressField(protocol="ipv4", null=True)
     end_ip = models.GenericIPAddressField(protocol="ipv4", null=True)
+    dhcp = models.TextField()
     updated_at = models.DateTimeField(blank=True, null=True, auto_now=True)
     created_at = models.DateTimeField(blank=True, auto_now_add=True)
 
@@ -122,6 +126,8 @@ class YzyVoiDesktop(SoftDeletableModel):
     os_type = models.CharField(max_length=64)
     sys_restore = models.IntegerField(default=1)
     data_restore = models.IntegerField(default=1)
+    sys_reserve_size = models.IntegerField(default=0)
+    data_reserve_size = models.IntegerField(default=0)
     prefix = models.CharField(max_length=128, default='PC')
     use_bottom_ip = models.BooleanField(default=True)
     ip_detail = models.TextField()
@@ -132,6 +138,7 @@ class YzyVoiDesktop(SoftDeletableModel):
     default = models.BooleanField(default=False)
     show_info = models.BooleanField(default=False)
     auto_update = models.BooleanField(default=False)
+    diff_mode = models.IntegerField(default=1)
     # data_disk = models.BooleanField(default=False)
     # data_disk_size = models.IntegerField()
     # data_disk_type = models.IntegerField(default=1)
@@ -183,6 +190,8 @@ class YzyVoiDeviceInfo(SoftDeletableModel):
     size = models.IntegerField(default=0)
     section = models.IntegerField(default=0)
     used = models.FloatField()
+    diff1_ver = models.IntegerField(default=0)
+    diff2_ver = models.IntegerField(default=0)
     progress = models.IntegerField(default=0)
     upload_path = models.CharField(max_length=255)
     updated_at = models.DateTimeField(blank=True, null=True, auto_now=True)

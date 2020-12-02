@@ -2,20 +2,31 @@
 import logging
 import time
 import json
+import pymysql
 import datetime as dt
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
 from functools import wraps
-from common.config import SERVER_CONF
+from dynaconf import LazySettings
+# from common.config import SERVER_CONF
 from yzy_server.database import apis as db_api
 from yzy_server.database import models
 from common.utils import build_result
+from common import constants
 
-
-engine = create_engine(
-    SERVER_CONF.addresses.get_by_default('sqlalchemy_database_uri',
-                                         'mysql+mysqlconnector://root:123qwe,.@localhost:3306/yzy_kvm_db?'))
+settings = LazySettings(ROOT_PATH_FOR_DYNACONF=constants.BASE_DIR)
+DATABASE_HOST = settings.get('HOST', '127.0.0.1')
+DATABASE_PORT = settings.get('PORT', 3306)
+DATABASE_USER = settings.get('USER', 'root')
+DATABASE_PASSWORD = settings.get('PASSWORD', '123qwe,.')
+DATABASE_NAME = settings.get('NAME', 'yzy_kvm_db')
+engine = create_engine("mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db_name}?charset=utf8".
+                       format(**{"user": DATABASE_USER, "password": DATABASE_PASSWORD, "host": DATABASE_HOST,
+                                 "port": DATABASE_PORT, "db_name": DATABASE_NAME}))
+# engine = create_engine(
+#     SERVER_CONF.addresses.get_by_default('sqlalchemy_database_uri',
+#                                          'mysql+mysqlconnector://root:123qwe,.@localhost:3306/yzy_kvm_db?'))
 logger = logging.getLogger(__name__)
 
 
@@ -132,3 +143,42 @@ class MonitorNodeController(object):
         _data = self.get_perf_info(node_uuid, statis_hours, step_minutes)
         _data.update({"node_uuid": node_uuid})
         return build_result("Success", data=_data)
+
+
+class TerminalMonitorController(object):
+
+    @timefn
+    def export_resources(self, data):
+        terminal_uuid = data.get("terminal_uuid")
+        if not terminal_uuid:
+            logger.error("terminal export resources error:param error")
+            return build_result("ParamError")
+        try:
+            sql = "select * from yzy_voi_terminal_performance where deleted=False and terminal_uuid=\'{}\'".format(
+                terminal_uuid)
+            df = pd.read_sql(sql, engine)
+            file_target = pd.DataFrame(df, index=range(len(df)), columns=['target'])
+            file_all = df.join(file_target, how="outer")
+            file_all.to_csv(constants.TERMINAL_RESOURCES_PATH)
+            return build_result("Success")
+        except Exception as e:
+            logger.error("terminal export resources error:%s", e, exc_info=True)
+            return build_result("OtherError")
+
+    @timefn
+    def terminal_hardware(self, data):
+        terminal_uuid = data.get("terminal_uuid")
+        if not terminal_uuid:
+            logger.error("terminal hardware collection error:param error")
+            return build_result("ParamError")
+        try:
+            sql = "select * from yzy_voi_terminal_hard_ware where deleted=False and terminal_uuid=\'{}\'".format(
+                terminal_uuid)
+            df = pd.read_sql(sql, engine)
+            file_target = pd.DataFrame(df, index=range(len(df)), columns=['target'])
+            file_all = df.join(file_target, how="outer")
+            file_all.to_csv(constants.TERMINAL_HARDWARE_PATH)
+            return build_result("Success")
+        except Exception as e:
+            logger.error("terminal hardware collection error:%s", e, exc_info=True)
+            return build_result("OtherError")

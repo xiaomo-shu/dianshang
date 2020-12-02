@@ -210,7 +210,7 @@ def execute(*cmd, **kwargs):
     run_as_root = kwargs.pop('run_as_root', False)
     root_helper = kwargs.pop('root_helper', '')
     shell = kwargs.pop('shell', False)
-    loglevel = kwargs.pop('loglevel', logging.DEBUG)
+    loglevel = kwargs.pop('loglevel', logging.INFO)
     log_errors = kwargs.pop('log_errors', None)
     if log_errors is None:
         log_errors = LogErrors.DEFAULT
@@ -317,6 +317,8 @@ def execute(*cmd, **kwargs):
                 # handler (decoding cannot fail)
                 stdout = os.fsdecode(stdout)
                 stderr = os.fsdecode(stderr)
+                if _returncode == 0:
+                    stderr = ''
                 return (stdout, stderr)
             else:
                 return result
@@ -489,13 +491,13 @@ def get_worker_count():
         return 1
 
 
-def run_cmd(cmd):
-    logging.info('running cmd:%s', cmd)
+def run_cmd(cmd, ignore_log=False):
     (status, output) = subprocess.getstatusoutput(cmd)
-    if status != 0:
-        logging.error('cmd:%s, status:%s, output:%s', cmd, status, output)
-    else:
-        logging.info('cmd:%s, status:%s, output:%s', cmd, status, output)
+    if not ignore_log:
+        if status != 0:
+            logging.error('cmd:%s, status:%s, output:%s', cmd, status, output)
+        else:
+            logging.info('cmd:%s, status:%s, output:%s', cmd, status, output)
     return status, output
 
 

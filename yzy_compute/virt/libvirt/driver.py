@@ -364,6 +364,8 @@ class LibvirtDriver(object):
         if virt_type not in ("lxc", "uml", "parallels", "xen"):
             guest.features.append(vconfig.LibvirtConfigGuestFeatureACPI())
             guest.features.append(vconfig.LibvirtConfigGuestFeatureAPIC())
+            guest.features.append(vconfig.LibvirtConfigGuestFeaturePAE())
+            guest.features.append(vconfig.LibvirtConfigGuestFeatureVmport())
 
         if (virt_type in ("qemu", "kvm") and
                 os_type == 'windows'):
@@ -432,7 +434,10 @@ class LibvirtDriver(object):
         #         base_path = disk['base_path']
         #         break
         # self._create_consoles_qemu_kvm(guest, instance, base_path)
-
+        # usb3.0
+        # usbhost = vconfig.LibvirtConfigGuestUSBHostController()
+        # usbhost.model = 'nec-xhci'
+        # guest.add_device(usbhost)
         # usb tablet,解决鼠标漂移问题
         if CONF.vnc.enabled or (
                 CONF.spice.enabled and not CONF.spice.agent_enabled):
@@ -550,20 +555,58 @@ class LibvirtDriver(object):
         logging.info("define domain end")
         return guest
 
+    # # create the diff file
+    # def _prepare_disk(self, server_id, disk):
+    #     logging.info("prepare disk for instance, uuid:%s, disk:%s", server_id, disk)
+    #     # system disk and data disk in different position
+    #     base_path = disk['base_path']
+    #     # if constants.SYSTEM_BOOT_INDEX == disk['boot_index']:
+    #     #     base_path = CONF.libvirt.instances_path
+    #     # else:
+    #     #     base_path = CONF.libvirt.data_path
+    #     base_dir = os.path.join(base_path, server_id)
+    #     utils.ensure_tree(base_dir)
+    #
+    #     # create the disk file
+    #     disk_file = "%s/%s%s" % (base_dir, constants.DISK_FILE_PREFIX, disk['uuid'])
+    #     if os.path.exists(disk_file):
+    #         # 实现开机还原
+    #         if disk.get('restore', False):
+    #             try:
+    #                 logging.info("the disk is exists and restore, delete")
+    #                 os.remove(disk_file)
+    #             except:
+    #                 pass
+    #         else:
+    #             logging.info("the disk is exists and not restore, return")
+    #             return disk_file
+    #     if disk.get('image_id', None):
+    #         version = disk.get('image_version', 0)
+    #         if version > 0:
+    #             backing_file = utils.get_backing_file(1, disk['image_id'], base_path)
+    #         else:
+    #             backing_file = utils.get_backing_file(0, disk['image_id'], base_path)
+    #         # if disk.get('size', None):
+    #         #     cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, '-o',
+    #         #                      'backing_file=%s' % backing_file,
+    #         #                      disk['size'], run_as_root=True)
+    #         # else:
+    #         cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, '-o',
+    #                              'backing_file=%s' % backing_file, run_as_root=True)
+    #         logging.info("create the diff disk success")
+    #     else:
+    #         # if there is no backing file, create the disk with size info
+    #         cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, disk['size'], run_as_root=True)
+    #         logging.info("create the diff disk success")
+    #     return disk_file
+
     # create the diff file
     def _prepare_disk(self, server_id, disk):
         logging.info("prepare disk for instance, uuid:%s, disk:%s", server_id, disk)
-        # system disk and data disk in different position
-        base_path = disk['base_path']
-        # if constants.SYSTEM_BOOT_INDEX == disk['boot_index']:
-        #     base_path = CONF.libvirt.instances_path
-        # else:
-        #     base_path = CONF.libvirt.data_path
-        base_dir = os.path.join(base_path, server_id)
-        utils.ensure_tree(base_dir)
-
         # create the disk file
-        disk_file = "%s/%s%s" % (base_dir, constants.DISK_FILE_PREFIX, disk['uuid'])
+        disk_file = disk['disk_file']
+        disk_dir = os.path.dirname(disk_file)
+        utils.ensure_tree(disk_dir)
         if os.path.exists(disk_file):
             # 实现开机还原
             if disk.get('restore', False):
@@ -575,19 +618,9 @@ class LibvirtDriver(object):
             else:
                 logging.info("the disk is exists and not restore, return")
                 return disk_file
-        if disk.get('image_id', None):
-            version = disk.get('image_version', 0)
-            if version > 0:
-                backing_file = utils.get_backing_file(1, disk['image_id'], base_path)
-            else:
-                backing_file = utils.get_backing_file(0, disk['image_id'], base_path)
-            # if disk.get('size', None):
-            #     cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, '-o',
-            #                      'backing_file=%s' % backing_file,
-            #                      disk['size'], run_as_root=True)
-            # else:
+        if disk.get('backing_file', None):
             cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', disk_file, '-o',
-                                 'backing_file=%s' % backing_file, run_as_root=True)
+                             'backing_file=%s' % disk['backing_file'], run_as_root=True)
             logging.info("create the diff disk success")
         else:
             # if there is no backing file, create the disk with size info
@@ -1202,17 +1235,12 @@ class LibvirtDriver(object):
         self._destroy(instance)
         for image in images:
             logging.info("delete the file:%s", image)
-            base_path = image['base_path']
-            instance_dir = os.path.join(base_path, instance['uuid'])
-            filename = constants.DISK_FILE_PREFIX + image['image_id']
-            source_file = os.path.join(instance_dir, filename)
             try:
-                os.remove(source_file)
+                os.remove(image['disk_file'])
             except:
                 pass
-            backing_file = utils.get_backing_file(1, image['image_id'], base_path)
-            cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', source_file, '-o',
-                             'backing_file=%s' % backing_file, run_as_root=True)
+            cmdutils.execute('qemu-img', 'create', '-f', 'qcow2', image['disk_file'], '-o',
+                             'backing_file=%s' % image['backing_file'], run_as_root=True)
 
     # def stop_restore_instance(self, instance, sys_restore, data_restore, timeout=120):
     #     if sys_restore:
@@ -1263,8 +1291,8 @@ class LibvirtDriver(object):
         if image_version > 0:
             for image in images:
                 try:
-                    logging.info("delete template version file:%s", image['image_path'])
-                    os.remove(image['image_path'])
+                    logging.info("delete template version file:%s", image['backing_file'])
+                    os.remove(image['backing_file'])
                 except Exception as e:
                     logging.error("delete failed:%s", e)
 
@@ -1409,28 +1437,25 @@ class LibvirtDriver(object):
                 logging.error("attach disk failed:%s", e)
                 raise exception.ChangeCdromPathError(domain=instance['uuid'], error=str(e))
 
-    def detach_disk(self, instance, base_path, disk_uuid, delete_base=False):
-        logging.info("detach instance:%s, base_path:%s, disk_uuid:%s", instance['uuid'], base_path, disk_uuid)
-        disk_base = os.path.join(base_path, instance['uuid'])
-        disk_path = os.path.join(disk_base, constants.DISK_FILE_PREFIX + disk_uuid)
+    def detach_disk(self, instance, disk_file, backing_file, delete_base=False):
+        logging.info("detach instance:%s, disk_file:%s", instance['uuid'], disk_file)
         guest = self._host.get_guest(instance)
         devs = guest.get_all_devices(vconfig.LibvirtConfigGuestDisk)
         conf = None
         for dev in devs:
-            if disk_path == dev.source_path:
+            if disk_file == dev.source_path:
                 conf = dev
                 break
         if conf:
             try:
                 guest.detach_device(conf, True, False)
                 try:
-                    os.remove(disk_path)
                     if delete_base:
-                        backing_file = utils.get_backing_file(1, disk_uuid, base_path)
+                        os.remove(disk_file)
                         os.remove(backing_file)
                 except:
                     pass
-                logging.info("detach path %s success", disk_path)
+                logging.info("detach path %s success", disk_file)
             except Exception as e:
                 logging.error("detach path failed:%s", e)
                 raise exception.ChangeCdromPathError(domain=instance['uuid'], error=str(e))

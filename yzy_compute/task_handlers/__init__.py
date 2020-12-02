@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 
-from yzy_compute.task_handlers.instance_handler import InstanceHandler
-from yzy_compute.task_handlers.network_handler import NetworkHandler
-from yzy_compute.task_handlers.template_handler import TemplateHandler
-from yzy_compute.task_handlers.voi_handler import VoiHandler
-from yzy_compute.task_handlers.node_handler import NodeHandler
+from .instance_handler import InstanceHandler
+from .network_handler import NetworkHandler
+from .template_handler import TemplateHandler
+from .voi_handler import VoiHandler
+from .node_handler import NodeHandler
+from .ha_handler import HaHandler
+from .disk_handler import DiskHandler
+from .nfs_handle import  NfsHandler
 
 def setup():
     """
@@ -35,7 +38,10 @@ def setup():
             'VoiHandler': VoiHandler(),
             'NetworkHandler': NetworkHandler(),
             'InstanceHandler': InstanceHandler(),
-            'NodeHandler': NodeHandler()
+            'NodeHandler': NodeHandler(),
+            'HaHandler': HaHandler(),
+            'DiskHandler': DiskHandler(),
+            'NfsHandler': NfsHandler(),
         }
     except Exception as ex:
         raise Exception("load handler error")

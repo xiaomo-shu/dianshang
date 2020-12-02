@@ -119,8 +119,319 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 		}
 	}
     ```
+    
+### 3、voi首页动态资源获取、cpu/内存等
+
+* URL
+
+    `/index/get_voi_server_data`
+    
+* Method
+    **GET** 请求， **body** 无 **数据返回** **json格式**
+    
+* Returns
+  | Name           | Type    | Description      |
+  | -------------- | ------- | ---------------- |
+  | code           | int     | 返回码      |
+  | msg            | str     | 返回的具体信息  |
+  | data           | object  | 根据需求返回相应数据|
+  | cpu_util       | object  | cpu相关信息 |
+  | numbers        | int     | cpu个数  |
+  | utilization    | float   | cpu使用率 |
+  | disk_util      | object  | 磁盘相关信息|
+  | free           | int     | 剩余可用 |
+  | ratio          | float   | 磁盘使用率|
+  | total          | int     | 总磁盘大小|
+  | used           | int     | 已使用大小|
+  | memory_util    | object  | 内存相关信息|
+  | available      | int     | 已使用大小|
+  | free           | int     | 剩余可以大小|
+  | total          | int     | 总内存大小|
+  | utilization    | float   | 内存使用率|
+  | nic_util       | object  | 网络上下行信息|
+  | bytes_recv     | int     | 网络下行|
+  | bytes_send     | int     | 网络上行|
+  
+  - 示例：
+    ```json
+      {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "cpu_util": {
+          "numbers": 8,
+          "utilization": 39.7
+        },
+        "disk_util": {
+          "free": 363946614784,
+          "ratio": 14.85,
+          "total": 454584164352,
+          "used": 67522322432
+        },
+        "memory_util": {
+          "available": 5316390912,
+          "free": 2783567872,
+          "total": 8099958784,
+          "utilization": 34.4
+        },
+        "nic_util": {
+          "bytes_recv": 3103,
+          "bytes_send": 3858
+        }
+      }
+    }
+
+    ```
+    
+### 4、获取voi首页静态资源数据（模板、桌面等）
+
+* URL
+
+    `/index/get_voi_resource_statistic/`
+    
+* Method
+
+    **GET** **请求** **body** **无** **返回数据** **json格式**
+    
+* Returns
+  | Name                   | Type    | Description      |
+  | ---------------------- | ------- | ---------------- |
+  | code                   | int     | 返回码      |
+  | msg                    | string  | 返回的具体信息  |
+  | data                   | object  | 根据需求返回相应数据|
+  | node_ip                | string  | 主控ip地址|
+  | status                 | string  | 主控运行状态|
+  | teach                  | object  | 教学模板数据对象|
+  | teach_count            | int     | 教学模板总数|
+  | desktop_reference      | int     | 被桌面引用数|
+  | personal               | object  | 个人模板数据对象|
+  | personal_count         | int     | 个人模板总数|
+  | desktop_reference      | int     | 个人模板总数|
+  | teach_desktop          | int     | 教学桌面组数|
+  | teach_desktop_active   | int     | 教学桌面组已激活数|
+  | personal_desktop       | int     | 个人桌面组数|
+  | teach_group            | list    | 教学分组列表|
+  | name                   | string  | 教学分组名称|
+  | terminal_count         | int     | 终端总数|
+  | off_line               | int     | 终端离线数|
+  | on_line                | int     | 终端在线数|
+  
+  - 示例：
+  ```json
+      {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "node_ip": "172.16.1.29",
+        "status": "error",
+        "teach": {
+          "teach_count": 6,
+          "desktop_reference": 0
+        },
+        "personal": {
+          "personal_count": 1,
+          "desktop_reference": 1
+        },
+        "teach_desktop": 1,
+        "teach_desktop_active": 1,
+        "personal_desktop": 1,
+        "teach_group": [
+          {
+            "name": "voi_default",
+            "terminal_count": 0,
+            "off_line": 0,
+            "on_line": 0
+          },
+          {
+            "name": "voi_test",
+            "terminal_count": 0,
+            "off_line": 0,
+            "on_line": 0
+          }
+        ],
+        "license_status": 2,
+        "voi_size": 20
+      }
+    }
+
+  ```
+  
+### 5、获取融合版首页静态资源数据（终端、桌面等）
+
+* URL
+
+    `/index/get_fuse_resource_statistic/`
+    
+* Method
+    **GET** 请求 **body** 无 **返回数据** **json格式**
+    
+* Returns
+  | Name                   | Type    | Description      |
+  | ---------------------- | ------- | ---------------- |
+  | code                   | int     | 返回码      |
+  | msg                    | string  | 返回的具体信息  |
+  | data                   | object  | 根据需求返回相应数据|
+  | current_time           | string  | 服务器当前时间|
+  | resource_pool          | int     | 资源池数量|
+  | server_count           | int     | 服务器总数|
+  | boot_server            | int     | 已开机服务器数|
+  | error_server           | int     | 告警服务器|
+  | vdi_auth               | int     | vdi授权数|
+  | voi_auth               | int     | voi授权数|
+  | auth_status            | int     | 授权状态|
+  | expiration_date        | int     | 授权剩余时间|
+  | current_version        | string  | 当前版本|
+  | desktop_count          | int     | 云桌面总数|
+  | teach_desktop          | list    | 教学桌面数据列表|
+  | name                   | string  | 名称|
+  | power_num              | int     | vdi开机数|
+  | shutdown_num           | int     | vdi关机数|
+  | name                   | string  | 名称|
+  | power_num              | int     | voi开机数|
+  | shutdown_num           | int     | voi关机数|
+  | personal_desktop       | list    | 个人桌面数据列表|
+  | name                   | string  | 名称|
+  | power_num              | int     | vdi开机数|
+  | shutdown_num           | int     | vdi关机数|
+  | name                   | string  | 名称|
+  | power_num              | int     | voi开机数|
+  | shutdown_num           | int     | voi关机数|
+  | terminal_count         | int     | 终端注册总数|
+  | terminal               | object  | 终端数据对象|
+  | vdi                    | object  | 终端vdi数据对象|
+  | power_num              | int     | vdi开机数|
+  | shutdown_num           | int     | vdi关机数|
+  | voi                    | object  | 根据需求返回相应数据|
+  | power_num              | int     | voi开机数|
+  | shutdown_num           | int     | voi关机数|
+  | groups                 | object  | 分组管理数对象|
+  | vdi                    | object  | vdi分组|
+  | class_room             | int     | vdi分组数量|
+  | instance_on_line       | int     | 桌面在线数|
+  | instance_count         | int     | 桌面总数|
+  | ratio                  | float   | 比率|
+  | voi                    | object  | voi分组|
+  | class_room             | int     | voi分组数量|
+  | instance_on_line       | int     | 桌面在线数|
+  | instance_count         | int     | 桌面总数|
+  | ratio                  | float   | 比率|
+  | class_list             | list    | vdi分组列表|
+  | name                   | string  | 分组名称|
+  | instances              | int     | 分组桌面总数|
+  | on_line                | int     | 分组桌面在线数|
+  | voi_class_list         | object  | voi分组列表|
+  | name                   | string  | 分组名称|
+  | instances              | int     | 分组桌面总数|
+  | on_line                | int     | 分组桌面在线数|
+  
+  - 示例：
+  ```json
+      {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "current_time": "2020-09-24 09:37",
+        "resource_pool": 1,
+        "server_count": 1,
+        "boot_server": 1,
+        "error_server": 0,
+        "vdi_auth": 15,
+        "voi_auth": 15,
+        "auth_status": 2,
+        "expiration_date": 75,
+        "current_version": "0",
+        "desktop_count": 18,
+        "teach_desktop": [
+          {
+            "name": "vdi",
+            "power_num": 0,
+            "shutdown_num": 4
+          },
+          {
+            "name": "voi",
+            "power_num": 0,
+            "shutdown_num": 14
+          }
+        ],
+        "personal_desktop": [
+          {
+            "name": "vdi",
+            "power_num": 0,
+            "shutdown_num": 0
+          },
+          {
+            "name": "voi",
+            "power_num": 0,
+            "shutdown_num": 0
+          }
+        ],
+        "terminal_count": 30,
+        "terminal": [
+          {
+            "name": "vdi",
+            "power_num": 0,
+            "shutdown_num": 16
+          },
+          {
+            "name": "voi",
+            "power_num": 0,
+            "shutdown_num": 14
+          }
+        ],
+        "groups": {
+          "vdi": {
+            "class_room": 3,
+            "instance_on_line": 0,
+            "instance_count": 4,
+            "ratio": 0
+          },
+          "voi": {
+            "class_room": 3,
+            "instance_on_line": 0,
+            "instance_count": 14,
+            "ratio": 0
+          }
+        },
+        "class_list": [
+          {
+            "name": "演示教学",
+            "instances": 0,
+            "on_line": 0
+          },
+          {
+            "name": "yzy01",
+            "instances": 0,
+            "on_line": 0
+          },
+          {
+            "name": "yzy02",
+            "instances": 4,
+            "on_line": 0
+          }
+        ],
+        "voi_class_list": [
+          {
+            "name": "yzy012",
+            "instances": 1,
+            "on_line": 0
+          },
+          {
+            "name": "yzy02",
+            "instances": 0,
+            "on_line": 0
+          },
+          {
+            "name": "yzy03",
+            "instances": 0,
+            "on_line": 0
+          }
+        ]
+      }
+    }
+  ```
+
 	
-### 3、获取系统操作日志 ###
+### 6、获取系统操作日志 ###
 * URL
 
 	`/index/get_operation_log/?page=2&page_size=20`
@@ -334,20 +645,23 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 * Method
 
   **POST** 请求，**body** 参数使用 **json** 格式
+  
+  * Parameters
 
-* Returns
-
-  | Name | Type   | Description          |
-  | :--- | :----- | :------------------- |
-  | code | int    | 返回码               |
-  | msg  | str    | 请求返回的具体信息   |
+  | Name                   | Type   | Description        |
+  | ---------------------- | ------ | ------------------ |
+  |node                    |object  |主控对象              |
+  |uuid                    |string  |主控uuid              |
+  |name                    |string  |主控名称               |
 
   - 示例：
 
     ```json
-    {
-    	"code": 0,
-    	"msg": "成功"
+    { 
+    "node": {
+    	"uuid": "xxxxxxxxxxx",
+    	"name": "xxxxxxxxx"
+    }
     }
     ```
 
@@ -361,19 +675,24 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 
   **POST** 请求，**body** 参数使用 **json** 格式
 
-* Returns
+* Parameters
 
-  | Name | Type   | Description          |
-  | :--- | :----- | :------------------- |
-  | code | int    | 返回码               |
-  | msg  | str    | 请求返回的具体信息   |
+  | Name                   | Type   | Description        |
+  | ---------------------- | ------ | ------------------ |
+  |node                    |object  |主控对象              |
+  |compute_node            |bool    |是否勾选同时关闭计算节点 |
+  |uuid                    |string  |主控uuid              |
+  |name                    |string  |主控名称               |
 
   - 示例：
 
     ```json
     {
-    	"code": 0,
-    	"msg": "成功"
+    "node": {
+    	"uuid": "xxxxxx",
+    	"name": "xxxxx"
+    },
+    "compute_node": "True"
     }
     ```
 
@@ -669,7 +988,7 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 
 * Method
 
-  **GET** 请求，**body** 参数使用 **json** 格式
+  **GET** 请求，**body** 无
 
 * Returns
 
@@ -919,6 +1238,680 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
         "data": {}
     }
     ```
+
+
+### 14、获取HA数据同步网络 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_data_sync_network`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "ha_data_sync_network": "eth0(172.16.1.66)",
+        "manage_gateway": "172.16.1.254"
+      }
+    }
+    ```
+
+
+### 15、Ping IP ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ping_ip?ip=172.16.1.254`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Parameters
+
+  | Name                            | Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | ip(required)                    | str    | ip                                     |
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+      }
+    }
+    ```
+
+
+### 16、启用HA ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_config`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                            | Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | master_uuid(required)           | str    | 主控节点uuid                           |
+  | backup_uuid(required)           | str    | 备控节点uuid                           |
+  | sensitivity(required)           | int    | 敏感度                                 |
+  | quorum_ip(required)             | str    | 仲裁IP                                 |
+  | vip(required)                   | str    | 浮动IP                                 |
+  | backup_pwd(required)            | str    | 备控节点登录密码                       |
+
+  - 示例：
+
+    ```json
+    {
+        "master_uuid": "82d56980-7b6d-4086-a9b9-814a2c045f62",
+        "backup_uuid": "e165aa3d-2d2a-4ea7-a339-fb67561829a7",
+        "sensitivity": 60,
+        "quorum_ip": "172.16.1.254",
+        "vip": "172.16.1.199",
+        "backup_pwd": "123qwe,."
+    }
+    ```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+    	"code": 0,
+    	"msg": "成功",
+        "data": {}
+    }
+    ```
+
+
+### 17、获取HA信息 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_config`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "id": 16,
+        "deleted_at": null,
+        "updated_at": "2020-08-18 08:25:14",
+        "created_at": "2020-08-18 08:25:14",
+        "uuid": "92711311-efbf-4058-8ed3-4876a433463b",
+        "vip": "172.16.1.199",
+        "netmask": "255.255.255.0",
+        "quorum_ip": "172.16.1.254",
+        "sensitivity": 60,
+        "master_ip": "172.16.1.88",
+        "backup_ip": "172.16.1.66",
+        "master_nic": "eth0",
+        "backup_nic": "eth0",
+        "master_nic_uuid": "d52f6e79-300a-4783-bc8f-0c41b1abd6f9",
+        "backup_nic_uuid": "1b223628-6f29-495c-af41-c16a4c322ff4",
+        "master_uuid": "e801e3b1-ad1a-495e-b3d6-8353dee273e3",
+        "backup_uuid": "194279f3-31db-4ce0-9e46-39ffbf257f64",
+        "ha_enable_status": 0,
+        "ha_running_status": 0,
+        "data_sync_status": 0,
+        "master_net_status": 0,
+        "backup_net_status": 0,
+        "deleted": 0
+      }
+    }
+    ```
+
+
+### 18、获取HA状态 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_config/<str:ha_info_uuid>`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Parameters
+
+  | Name                            | Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | ha_info_uuid(required)          | str    | HA记录uuid                             |
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "backup_net_status": 0,
+        "data_sync_status": 0,
+        "ha_enable_status": 0,
+        "ha_running_status": 0,
+        "master_net_status": 0
+      }
+    }
+    ```
+
+
+### 19、HA主备切换 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_config/<str:ha_info_uuid>/switch_master`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                            | Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | ha_info_uuid(required)          | str    | HA记录uuid                             |
+  | new_vip_host_ip(required)       | str    | 新主控节点ip                           |
+
+  - 示例：
+
+    ```json
+    {
+        "new_vip_host_ip": "172.16.1.66"
+    }
+    ```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+    	"code": 0,
+    	"msg": "成功",
+        "data": {}
+    }
+    ```
+
+
+### 20、禁用HA ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/ha_config/<str:ha_info_uuid>`
+
+* Method
+
+  **DELETE** 请求，**body** 无
+
+* Parameters
+
+  | Name                            | Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | ha_info_uuid(required)          | str    | HA记录uuid                             |
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+    	"code": 0,
+    	"msg": "成功",
+        "data": {
+            "master_ip": "172.16.1.66"
+        }
+    }
+    ```
+
+
+### 21、备控节点列表基本信息 ###
+
+* URL
+
+	`/api/v1.0/resource_mgr/controller_nodes?backup=1`
+
+* Method
+
+	**GET** 请求，**body** 无
+
+* Returns
+
+  | Name |Type|Description|
+  | :------- | :----| :-----|
+  |code|int | 返回码 |
+  |msg |str | 请求返回的具体信息 |
+  |data | object| 根据需求返回相应数据 |
+  |count|int|数据总数|
+  |results|object|当前页的数据数组|
+  |uuid| str| 节点uuid|
+  |name| str| 节点名称|
+  |hostname|str|节点hostname|
+  |ip| str| 节点IP|
+  |usage_sys|str|系统存储使用率|
+  |usage_data|str|数据存储使用率|
+  |total_sys|str|总系统存储|
+  |used_sys|str|已使用系统存储|
+  |server_version_info|str|服务器版本|
+  |cpu_info|str|CPU信息|
+  |mem_info|str|内存信息|
+  |gpu_info|str|显卡信息|
+  |total_vm|int|虚拟机总数量|
+  |running_vm|int|虚拟机运行数量|
+  |status|str|节点状态 shutdown- active-|
+  |type|int| 节点类型：1-计算和主控一体, 2-计算和备控一体, 3-主控, 4-备控,5-计算|
+  |total_vcpus| int| 虚拟cpu核数|
+  |running_vcpus| int| 运行cpu核数|
+  |usage_vcpus|str| cpu使用率|
+  |total_mem| int| 总内存，单位：G|
+  |running_mem|int| 运行内存，单位：G|
+  |usage_mem|str| 内存使用率|
+  |network_interfaces| object| 网卡信息|
+  |storages| object| 存储设备信息|
+  |deleted|int|是否删除 0 -否|
+  |deleted_at|str|删除时间|
+  |updated_at|str|更新时间|
+  |created_at|str|创建时间|
+
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "count": 1,
+        "next": null,
+        "previous": null,
+        "results": [
+          {
+            "id": 3,
+            "name": "compute_88",
+            "uuid": "e801e3b1-ad1a-495e-b3d6-8353dee273e3",
+            "hostname": "localhost.localdomain",
+            "ip": "172.16.1.88",
+            "total_mem": 15.51,
+            "running_mem": 13.98,
+            "total_vcpus": 0,
+            "running_vcpus": 0,
+            "mem_utilization": 9.9,
+            "server_version_info": "Yi Server 5.0",
+            "gpu_info": "1 * VMware VMWARE0405",
+            "cpu_info": [
+              "8 * Intel(R) Xeon(R) CPU E5-2680 v2 @ 2.80GHz"
+            ],
+            "mem_info": [
+              "1 * Not Specified"
+            ],
+            "status": "active",
+            "type": 2,
+            "created_at": "2020-08-15 03:03:29",
+            "cpu_utilization": 14.3,
+            "updated_at": "2020-08-21 01:53:49",
+            "deleted_at": null,
+            "network_interfaces": [
+              {
+                "id": 11,
+                "uuid": "d52f6e79-300a-4783-bc8f-0c41b1abd6f9",
+                "nic": "eth0",
+                "mac": "00:0c:29:0c:b3:90",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [
+                  {
+                    "uuid": "b77c9e7c-82c2-4bd4-93bc-b7aa2da608c9",
+                    "ip": "172.16.1.88",
+                    "netmask": "255.255.255.0",
+                    "gateway": "176.16.1.254",
+                    "dns1": "8.8.8.8",
+                    "dns2": "",
+                    "is_manage": 1,
+                    "is_image": 1
+                  }
+                ],
+                "is_uplink": false,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {
+                  "gateway": "176.16.1.254",
+                  "dns1": "8.8.8.8",
+                  "dns2": ""
+                }
+              },
+              {
+                "id": 12,
+                "uuid": "5b72ff12-0c94-4064-85ac-daf93fb7e347",
+                "nic": "eth1",
+                "mac": "00:0c:29:0c:b3:9a",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [
+                  {
+                    "uuid": "b1d8faaa-c7ee-41d3-b0ba-f7b84eb24117",
+                    "ip": "192.168.1.88",
+                    "netmask": "255.255.255.0",
+                    "gateway": "192.168.1.254",
+                    "dns1": "8.8.8.9",
+                    "dns2": "",
+                    "is_manage": 0,
+                    "is_image": 0
+                  }
+                ],
+                "is_uplink": true,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {
+                  "gateway": "192.168.1.254",
+                  "dns1": "8.8.8.9",
+                  "dns2": ""
+                }
+              },
+              {
+                "id": 13,
+                "uuid": "a9ccfabe-c91e-44e8-b33a-d958668543eb",
+                "nic": "eth2",
+                "mac": "00:0c:29:0c:b3:a4",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [],
+                "is_uplink": false,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {}
+              }
+            ],
+            "new_network_interfaces": [
+              {
+                "id": 11,
+                "uuid": "d52f6e79-300a-4783-bc8f-0c41b1abd6f9",
+                "nic": "eth0",
+                "mac": "00:0c:29:0c:b3:90",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [
+                  {
+                    "uuid": "b77c9e7c-82c2-4bd4-93bc-b7aa2da608c9",
+                    "ip": "172.16.1.88",
+                    "netmask": "255.255.255.0",
+                    "gateway": "176.16.1.254",
+                    "dns1": "8.8.8.8",
+                    "dns2": "",
+                    "is_manage": 1,
+                    "is_image": 1
+                  }
+                ],
+                "is_uplink": false,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {
+                  "gateway": "176.16.1.254",
+                  "dns1": "8.8.8.8",
+                  "dns2": ""
+                }
+              },
+              {
+                "id": 12,
+                "uuid": "5b72ff12-0c94-4064-85ac-daf93fb7e347",
+                "nic": "eth1",
+                "mac": "00:0c:29:0c:b3:9a",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [
+                  {
+                    "uuid": "b1d8faaa-c7ee-41d3-b0ba-f7b84eb24117",
+                    "ip": "192.168.1.88",
+                    "netmask": "255.255.255.0",
+                    "gateway": "192.168.1.254",
+                    "dns1": "8.8.8.9",
+                    "dns2": "",
+                    "is_manage": 0,
+                    "is_image": 0
+                  }
+                ],
+                "is_uplink": true,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {
+                  "gateway": "192.168.1.254",
+                  "dns1": "8.8.8.9",
+                  "dns2": ""
+                }
+              },
+              {
+                "id": 13,
+                "uuid": "a9ccfabe-c91e-44e8-b33a-d958668543eb",
+                "nic": "eth2",
+                "mac": "00:0c:29:0c:b3:a4",
+                "speed": 10000,
+                "status": 2,
+                "type": 0,
+                "deleted_at": null,
+                "updated_at": "2020-08-15 03:03:29",
+                "created_at": "2020-08-15 03:03:29",
+                "ip_info": [],
+                "is_uplink": false,
+                "is_slave": false,
+                "is_bond": false,
+                "gate_info": {}
+              }
+            ],
+            "bond_nics": [],
+            "storages": [
+              {
+                "uuid": "88482fc9-ad1c-4c71-be4d-a99f2d3041b5",
+                "path": "/opt/slow",
+                "used": 0.05,
+                "total": 49.21,
+                "usage": "5.23",
+                "role": "1,2,3,4",
+                "available": 46.63
+              }
+            ],
+            "template_sys": {
+              "uuid": "88482fc9-ad1c-4c71-be4d-a99f2d3041b5",
+              "path": "/opt/slow",
+              "used": 0.05,
+              "total": 49.21,
+              "usage": "5.23",
+              "role": "1,2,3,4",
+              "available": 46.63
+            },
+            "template_data": {
+              "uuid": "88482fc9-ad1c-4c71-be4d-a99f2d3041b5",
+              "path": "/opt/slow",
+              "used": 0.05,
+              "total": 49.21,
+              "usage": "5.23",
+              "role": "1,2,3,4",
+              "available": 46.63
+            },
+            "instance_sys": {
+              "uuid": "88482fc9-ad1c-4c71-be4d-a99f2d3041b5",
+              "path": "/opt/slow",
+              "used": 0.05,
+              "total": 49.21,
+              "usage": "5.23",
+              "role": "1,2,3,4",
+              "available": 46.63
+            },
+            "instance_data": {
+              "uuid": "88482fc9-ad1c-4c71-be4d-a99f2d3041b5",
+              "path": "/opt/slow",
+              "used": 0.05,
+              "total": 49.21,
+              "usage": "5.23",
+              "role": "1,2,3,4",
+              "available": 46.63
+            },
+            "usage_sys": "5.24",
+            "usage_data": "5.24",
+            "total_sys": 49.21,
+            "used_sys": 0.05,
+            "usage_mem": 0,
+            "usage_vcpu": 0,
+            "total_vm": 0,
+            "running_vm": 0,
+            "total_vm_name": [],
+            "running_vm_name": []
+          }
+        ]
+      }
+    }
+    ```
+
+### 22、轮询HA操作结果 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/version/`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "version": "5.0.0.2"
+      }
+    }
+    ```
+    
+    
+### 23、获取系统运行时间 ###
+
+* URL
+
+  `/api/v1.0/resource_mgr/system_time/?uuid=05be4b47-53de-4abe-a9fc-586c703cd55c`
+
+* Method
+
+  **GET** 请求，**body** 无
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+        {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "run_time": "24天21时41分"
+      }
+    }
+    ```
+
 
 
 
@@ -5874,6 +6867,692 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 
 
 
+## 排课管理
+
+### 1、获取学期展示列表 ###
+
+* URL
+
+  `/api/v1.0/education/term/`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+	{
+        "code": 0,
+        "msg": "成功",
+        "data": [
+			{
+			   "uuid": "fa3b3183-01aa-4102-8be3-6b71239fbe70",
+			   "name": "2020年上学期",
+			   "start": "2020/09/01",
+			   "end": "2021/02/01",
+			   "duration": 45,
+			   "break_time": 10,
+			   "morning": "08:00",
+			   "afternoon": "14:00",
+			   "evening": "19:00",
+			   "morning_count": 4,
+			   "afternoon_count": 4,
+			   "evening_count": 2,
+			   "course_num_map": [
+					{
+						"course_num": 1,
+						"value": "第一节 08:00-08:45"
+					},
+					...
+				],
+			   "weeks_num_map": [
+					{
+						"week_num": 1,
+						"value": "第一周 08/31--09/06"
+					},
+					...
+				]
+			   "total_course_num": 10,
+			   "total_weeks_num": 14,
+			   "time_map": [
+					"上午4节：08:00-12:00",
+					"下午4节：14:00-17:30",
+					"晚上2节：19:00-20:00"
+			   ],
+			   "occupied": 0
+			},
+			...
+		]
+    }
+	```
+
+### 2、获取服务器当前日期 ###
+
+* URL
+
+  `/api/v1.0/education/term/current_date/`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+	{
+        "code": 0,
+        "msg": "成功",
+        "data": "2020/09/10"
+	}
+	```
+
+### 3、新增学期 ###
+
+* URL
+
+  `/api/v1.0/education/term/`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | name(required)    	   			| str    | 学期名称                               |
+  | start(required)         		| str    | 学期开始日期          		          |
+  | end(required)            		| str    | 学期结束日期          		          |
+  | duration(required)      		| int    | 课堂时长 							  |
+  | break_time(required)      		| int    | 课间时长 							  |
+  | morning(required)         		| str    | 上午开始时间          		          |
+  | afternoon(required)         	| str    | 下午开始时间          		          |
+  | evening(required)         		| str    | 晚上开始时间          		          |
+  | morning_count(required)         | int    | 上午上课节数          		          |
+  | afternoon_count(required)       | int    | 下午上课节数          		          |
+  | evening_count(required)         | int    | 晚上上课节数          		          |
+  | course_num_map(required)      	| object | 上课时间映射表，详见示例               |
+
+  - 示例：
+
+    ```json
+	{
+	   "name": "2020年上学期",
+	   "start": "2020/09/01",
+	   "end": "2021/02/01",
+	   "duration": 45,
+	   "break_time": 10,
+	   "morning": "08:00",
+	   "afternoon": "14:00",
+	   "evening": "19:00",
+	   "morning_count": 4,
+	   "afternoon_count": 4,
+	   "evening_count": 2,
+	   "course_num_map": {
+		   "1": "08:00-08:45",
+		   "2": "09:00-09:45",
+		   "3": "10:00-10:45",
+		   "4": "11:00-11:45",
+		   "5": "14:00-14:45",
+		   "6": "15:00-15:45",
+		   "7": "16:00-16:45",
+		   "8": "17:00-17:45",
+		   "9": "19:00-19:45",
+		   "10": "20:00-20:45"
+	   }
+	}
+	```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+### 4、编辑学期 ###
+
+* URL
+
+  `/api/v1.0/education/term/<str:term_uuid>/`
+
+* Method
+
+  **PUT** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | name(required)    	   			| str    | 学期名称                               |
+  | start(required)         		| str    | 学期开始日期          		          |
+  | end(required)            		| str    | 学期结束日期          		          |
+  | duration(required)      		| int    | 课堂时长 							  |
+  | break_time(required)      		| int    | 课间时长 							  |
+  | morning(required)         		| str    | 上午开始时间          		          |
+  | afternoon(required)         	| str    | 下午开始时间          		          |
+  | evening(required)         		| str    | 晚上开始时间          		          |
+  | morning_count(required)         | int    | 上午上课节数          		          |
+  | afternoon_count(required)       | int    | 下午上课节数          		          |
+  | evening_count(required)         | int    | 晚上上课节数          		          |
+  | course_num_map(required)      	| object | 上课时间映射表，详见示例               |
+
+  - 示例：
+
+    ```json
+	{
+	   "name": "2020年上学期",
+	   "start": "2020/09/01",
+	   "end": "2021/02/01",
+	   "duration": 45,
+	   "break_time": 10,
+	   "morning": "08:00",
+	   "afternoon": "14:00",
+	   "evening": "19:00",
+	   "morning_count": 4,
+	   "afternoon_count": 4,
+	   "evening_count": 2,
+	   "course_num_map": {
+		   "1": "08:00-08:45",
+		   "2": "09:00-09:45",
+		   "3": "10:00-10:45",
+		   "4": "11:00-11:45",
+		   "5": "14:00-14:45",
+		   "6": "15:00-15:45",
+		   "7": "16:00-16:45",
+		   "8": "17:00-17:45",
+		   "9": "19:00-19:45",
+		   "10": "20:00-20:45"
+	   }
+	}
+	```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+### 5、删除学期 ###
+
+* URL
+
+  `/api/v1.0/education/term/<str:term_uuid>/`
+
+* Method
+
+  **DELETE** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+### 6、获取指定学期的教学分组列表 ###
+
+* URL
+
+  `/api/v1.0/education/term/<str:term_uuid>/edu_groups/`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": [
+			{
+				"group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261",
+				"group_name": "501教室",
+				"status": 1
+			},
+			...
+		]
+    }
+    ```
+
+### 7、获取指定周的课表内容 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/?term_uuid=062d6d14-97c1-448d-a9fb-67367fdf843b&group_uuid=41b212d6-3ef4-49f1-851d-424cb4559261&week_num=1`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+	{
+        "code": 0,
+        "msg": "成功",
+        "data": {
+			"uuid": "9094f24a-5e19-45af-b8de-a2288430f51b",
+			"term_uuid": "062d6d14-97c1-448d-a9fb-67367fdf843b",
+			"group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261",
+			"week_num": 1,
+			"course": [
+                {
+                    "course_num": 1,
+                    "value": "第一节 08:00-08:30",
+                    "mon": {
+                              "name": "math_desktop",
+                              "uuid": "f56036ca-e91d-440c-8e33-26a18c1f7220"
+                    },
+                    "tue": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "wed": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "thu": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "fri": {
+                              "name": "math_desktop",
+                              "uuid": "f56036ca-e91d-440c-8e33-26a18c1f7220"
+                    },
+                    "sat": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "sun": {
+                              "name": "",
+                              "uuid": ""
+                    }
+                },
+                ...
+            ]
+    }
+	```
+
+
+### 8、编辑课表 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/`
+
+* Method
+
+  **PUT** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | term_uuid(required)    	   		| str    | 学期uuid	                              |
+  | group_uuid(required)           	| str    | 教学分组uuid                           |
+  | week_num(required)      		| int    | 第几周 								  |
+  | course(required)                | list   | 课表内容，详见示例                     |
+
+
+  - 示例：
+
+    ```json
+		{
+            "term_uuid": "5e5244f0-b269-4f2d-a8f8-38e946b07942",
+            "group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261",
+            "week_num": 1,
+            "course": [
+                {
+                    "course_num": 1,
+                    "value": "第一节 08:00-08:30",
+                    "mon": {
+                              "name": "math_desktop",
+                              "uuid": "f56036ca-e91d-440c-8e33-26a18c1f7220"
+                    },
+                    "tue": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "wed": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "thu": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "fri": {
+                              "name": "math_desktop",
+                              "uuid": "f56036ca-e91d-440c-8e33-26a18c1f7220"
+                    },
+                    "sat": {
+                              "name": "",
+                              "uuid": ""
+                    },
+                    "sun": {
+                              "name": "",
+                              "uuid": ""
+                    }
+                },
+                ...
+            ]
+        }
+	```
+
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+	- 示例：
+
+	```json
+	{
+		"code": 0,
+		"msg": "成功",
+		"data": {}
+	}
+	```
+
+
+### 9、获取可批量应用的周列表 ###
+
+* URL
+
+  `/api/v1.0/education/term/<str:term_uuid>/weeks_num_map/?group_uuid=41b212d6-3ef4-49f1-851d-424cb4559261`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": [
+			{
+				"week_num": 1,
+				"value": "第一周 08/31--09/06",
+				"occupied": 0
+			},
+			...
+		]
+    }
+    ```
+
+### 10、批量应用课表 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/<str:course_schedule_uuid>/apply/`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | week_nums(required)      		| list   | 批量应用到哪些周的数组    			  |
+
+   - 示例：
+
+    ```json
+	{
+		"week_nums": [1, 3, 5, 7]
+	}
+	```
+
+### 11、启用课表 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/enable/`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | term_uuid(required)    	   		| str    | 学期uuid	                              |
+  | group_uuid(required)           	| str    | 教学分组uuid                           |
+
+     - 示例：
+
+    ```json
+	{
+		"term_uuid": "062d6d14-97c1-448d-a9fb-67367fdf843b",
+		"group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261"
+	}
+	```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+### 12、禁用课表 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/disable/`
+
+* Method
+
+  **POST** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | term_uuid(required)    	   		| str    | 学期uuid	                              |
+  | group_uuid(required)           	| str    | 教学分组uuid                           |
+
+     - 示例：
+
+    ```json
+	{
+		"term_uuid": "062d6d14-97c1-448d-a9fb-67367fdf843b",
+		"group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261"
+	}
+	```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+
+### 13、清除全部课表 ###
+
+* URL
+
+  `/api/v1.0/education/course_schedule/`
+
+* Method
+
+  **DELETE** 请求，**body** 参数使用 **json** 格式
+
+* Parameters
+
+  | Name                   			| Type   | Description                            |
+  | ------------------------------- | ------ | -------------------------------------- |
+  | term_uuid(required)    	   		| str    | 学期uuid	                              |
+  | group_uuid(required)           	| str    | 教学分组uuid                           |
+
+     - 示例：
+
+    ```json
+	{
+		"term_uuid": "062d6d14-97c1-448d-a9fb-67367fdf843b",
+		"group_uuid": "41b212d6-3ef4-49f1-851d-424cb4559261"
+	}
+	```
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+
+
+### 14、校验学期名称是否已存在 ###
+
+* URL
+
+  `/api/v1.0/education/term/check_name_existence/?name=2020年上学期`
+
+* Method
+
+  **GET** 请求，无 **body** 参数
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+
+    ```json
+    {
+        "code": 0,
+        "msg": "成功",
+        "data": {}
+    }
+    ```
+
+
+
 ## 用户分组管理
 
 ### 1、添加用户分组
@@ -8656,3 +10335,146 @@ web端的接口`endpoint`为`http://127.0.0.1:50004/api/v1.0/`
 
 
 
+### 预警平台
+
+* URL
+
+  `api/v1.0/monitor_mgr/warning_info?search_type=detail&uuid=xxxxx`
+  
+* Method
+
+  **GET**请求**
+
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+
+  - 示例：
+    
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "node_name": "localhost.localdomain",
+        "power_instance": 1,
+        "error_instance": 0,
+        "total_instance": 8,
+        "shutdown_instance": 7,
+        "instances": [
+          {
+            "name": "PC1",
+            "status": "active",
+            "ipaddr": "172.16.1.12",
+            "message": "",
+            "up_time": "2020-11-13 14:41:03",
+            "classify": 1,
+            "active_time": 503150,
+            "system_type": "windows_7_x64",
+            "host_name": "localhost.localdomain"
+          },
+          {
+            "name": "PC2",
+            "status": "inactive",
+            "ipaddr": "172.16.1.13",
+            "message": "",
+            "up_time": "2020-11-03 08:50:38",
+            "classify": 1,
+            "active_time": 0,
+            "system_type": "windows_7_x64",
+            "host_name": "localhost.localdomain"
+          },
+          {
+            "name": "PC3",
+            "status": "inactive",
+            "ipaddr": "172.16.1.14",
+            "message": "",
+            "up_time": "2020-10-20 10:38:09",
+            "classify": 1,
+            "active_time": 0,
+            "system_type": "windows_7_x64",
+            "host_name": "localhost.localdomain"
+          }
+        ]
+      }
+    }
+    ```
+    
+
+
+### 预警平台节点详情
+
+* URL
+  `api/v1.0/monitor_mgr/warning_info?search_type=all`
+  
+* Method 
+
+  **GET**请求**
+  
+* Returns
+
+  | Name | Type   | Description          |
+  | :--- | :----- | :------------------- |
+  | code | int    | 返回码               |
+  | msg  | str    | 请求返回的具体信息   |
+  | data | object | 根据需求返回相应数据 |
+  
+  - 示例：
+    ```json
+    {
+      "code": 0,
+      "msg": "成功",
+      "data": {
+        "node_total": 1,
+        "power_node": 1,
+        "shutdown_node": 0,
+        "desktop_total": 8,
+        "power_desktop": 1,
+        "shutdown_desktop": 7,
+        "error_desktop": 0,
+        "nodes": [
+          {
+            "name": "localhost.localdomain",
+            "uuid": "7456370d-e5cc-484e-bb49-67067fbba3f4",
+            "ip": "172.16.1.40",
+            "total_mem": 7.64,
+            "running_mem": 3.24,
+            "cpu_utilization": 36.5,
+            "mem_utilization": 57.6,
+            "cpu_info": [
+              "8 * Intel(R) Xeon(R) CPU E5-2680 v2 @ 2.80GHz"
+            ],
+            "mem_info": [
+              "2 * Not Specified 8GB"
+            ],
+            "storages": [
+              {
+                "uuid": "601d26f0-0c81-4b5e-ae1b-a437277fad3f",
+                "path": "/opt/slow",
+                "used": 27.24,
+                "total": 29.52,
+                "usage": "92.27",
+                "role": "1,2,3,4",
+                "available": 0.76
+              }
+            ],
+            "instance_total": 8,
+            "power_instance": 1,
+            "error_instance": 0,
+            "shutdown_instance": 7,
+            "system_run_time": "7天7时47分",
+            "bytes_send": 5027,
+            "bytes_recv": 1346,
+            "usage_sys": "97.43",
+            "usage_data": "97.43",
+            "total_sys": 29.52,
+            "used_sys": 27.24
+          }
+        ]
+      }
+    }
+    ```

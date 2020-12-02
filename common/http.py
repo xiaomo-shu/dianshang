@@ -179,7 +179,7 @@ class HTTPClient(_BaseHTTPClient):
         else:
             conn_url = "%s/%s" % (self.endpoint, url)
         try:
-            logging.debug("start requests, method:%s, url:%s", method, conn_url)
+            logging.debug("start requests, method:%s, url:%s, data:%s", method, conn_url, data)
             resp = self.session.request(method,
                                         conn_url,
                                         data=data,

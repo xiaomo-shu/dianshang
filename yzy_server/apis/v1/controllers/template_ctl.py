@@ -63,12 +63,27 @@ class TemplateController(BaseController):
             }
         :return:
         """
+        # 添加任务信息数据记录
+        task_uuid = create_uuid()
+        task_data = {
+            "uuid": task_uuid,
+            "task_uuid": task_uuid,
+            "name": constants.NAME_TYPE_MAP[7],
+            "status": constants.TASK_RUNNING,
+            "type": 7
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": task_uuid})
         if not self._check_template_params(data):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("ParamError")
 
         network = db_api.get_network_by_uuid(data['network_uuid'])
         if not network:
             logger.error("network: %s not exist", data['network_uuid'])
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("NetworkInfoNotExist")
 
         subnet_uuid = data.get('subnet_uuid', None)
@@ -76,6 +91,8 @@ class TemplateController(BaseController):
             subnet = db_api.get_subnet_by_uuid(data['subnet_uuid'])
             if not subnet:
                 logger.error("subnet: %s not exist", data['subnet_uuid'])
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("SubnetNotExist")
         else:
             subnet = None
@@ -83,8 +100,16 @@ class TemplateController(BaseController):
         template = db_api.get_template_with_all({'name': data['name'], 'classify': data['classify']})
         if template:
             logger.error("template: %s already exist", data['name'])
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateAlreadyExist", name=data['name'])
-
+        image_id = data['system_disk'].get('image_id')
+        if image_id:
+            image = db_api.get_image_with_first({"uuid": image_id})
+            if not image:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
+                return get_error_result("TemplateImageNotExist")
         # 如果没有指定节点，则模板默认放在主控节点
         if data.get('host_uuid', None):
             node = db_api.get_node_by_uuid(data['host_uuid'])
@@ -112,10 +137,19 @@ class TemplateController(BaseController):
                         data['bind_ip'] = ipaddr
                         break
                 else:
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
                     return get_error_result("IPNotEnough")
             if data['bind_ip'] not in all_ips:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("IPNotInRange", ipaddr=data['bind_ip'])
         logger.info("check bind_ip info")
+        sys_storage, data_storage = self._get_template_storage(node.uuid)
+        if not (sys_storage and data_storage):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("InstancePathNotExist")
 
         self.used_macs = self.get_used_macs()
         mac_addr = generate_mac(self.used_macs)
@@ -128,6 +162,8 @@ class TemplateController(BaseController):
         net = db_api.get_interface_by_network(network.uuid, node.uuid)
         if not net:
             logger.error("node %s network info %s error", node.uuid, network.uuid)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("NodeNetworkInfoError")
 
         vif_info = {
@@ -141,11 +177,21 @@ class TemplateController(BaseController):
         if not data.get('uuid'):
             data['uuid'] = create_uuid()
 
+        # 更新任务数据记录的task_uuid
+        task_obj.update({"task_uuid": data['uuid']})
+        task_obj.soft_update()
+
         # disk_info
         if not data['system_disk'].get('uuid'):
             data['system_disk']['uuid'] = create_uuid()
-        sys_base, data_base = self._get_template_storage_path()
-        disk_info = self.create_disk_info(data, version, sys_base, data_base, disk_generate=disk_generate)
+        data['sys_storage'] = sys_storage['uuid']
+        data['data_storage'] = data_storage['uuid']
+        if image_id:
+            image_path = image.path
+        else:
+            image_path = None
+        disk_info = self.create_disk_info(data, sys_storage['path'], data_storage['path'],
+                                          image_path, disk_generate=disk_generate)
 
         # 磁盘记录数据库
         disks = list()
@@ -154,7 +200,7 @@ class TemplateController(BaseController):
             "uuid": sys_disk['uuid'],
             "type": constants.IMAGE_TYPE_SYSTEM,
             "device_name": sys_disk['dev'],
-            "image_id": sys_disk['image_id'],
+            "image_id": data['system_disk'].get('image_id', ''),
             "instance_uuid": data['uuid'],
             "boot_index": sys_disk['boot_index'],
             "size": int(sys_disk['size'].replace('G', ''))
@@ -175,7 +221,7 @@ class TemplateController(BaseController):
             disks.append(info)
 
         template = db_api.create_instance_template(data)
-        db_api.insert_with_many(models.YzyInstanceDeviceInfo, disks)
+        # db_api.insert_with_many(models.YzyInstanceDeviceInfo, disks)
         logger.info("create template db info, use iso:%s", data.get('iso'))
 
         # 用于加载ISO的CDROM，加载后的ISO重启需要保存
@@ -214,7 +260,10 @@ class TemplateController(BaseController):
             self._create_instance(node.ip, instance_info, network_info, disk_info, power_on=power_on)
         except Exception as e:
             template.soft_delete()
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateCreateFail", name=data['name'], data=str(e))
+        db_api.insert_with_many(models.YzyInstanceDeviceInfo, disks)
         # 设置是否随节点启动
         if data.get("autostart", False):
             self._autostart(node.ip, instance_info, network_info[0]['vif_info'], data['autostart'])
@@ -234,6 +283,8 @@ class TemplateController(BaseController):
             "name": data['name'],
             "version": version
         }
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", ret)
 
     def system_install_complete(self, template_uuid):
@@ -322,6 +373,9 @@ class TemplateController(BaseController):
         if not template:
             logger.error("template %s not exist", template_uuid)
             return get_error_result("TemplateNotExist", name='')
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
 
         node = db_api.get_node_by_uuid(template.host_uuid)
         info = {
@@ -346,7 +400,8 @@ class TemplateController(BaseController):
         disk_info = list()
         devices = db_api.get_devices_by_instance(template.uuid)
         modify = db_api.get_devices_modify_with_all({"template_uuid": template.uuid})
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base_dir = os.path.join(sys_base, template_uuid)
+        data_base_dir = os.path.join(data_base, template_uuid)
         # 被标记删除的数据盘不记录进来
         for disk in devices:
             flag = True
@@ -356,27 +411,29 @@ class TemplateController(BaseController):
                     break
             if not flag:
                 continue
+            base_dir = sys_base_dir if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base_dir
             info = {
                 "uuid": disk.uuid,
                 "dev": disk.device_name,
-                "image_id": disk.uuid if template.version > 0 else disk.image_id,
-                "image_version": template.version,
                 "boot_index": disk.boot_index,
                 "size": "%dG" % disk.size,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
+                "disk_file": "%s/%s%s" % (base_dir, constants.DISK_FILE_PREFIX, disk.uuid),
             }
             disk_info.append(info)
+            if disk.image_id:
+                image = db_api.get_image_with_first({"uuid": disk.image_id})
+                if not image:
+                    return get_error_result("TemplateImageNotExist")
+                info['backing_file'] = image.path
         # 修改的只是数据盘
         for item in modify:
             if constants.DEVICE_NEED_ADDED == item.state:
                 info = {
                     "uuid": item.uuid,
                     "dev": item.device_name,
-                    "image_id": item.uuid,
-                    "image_version": template.version,
                     "boot_index": item.boot_index,
                     "size": "%dG" % item.size,
-                    "base_path": data_base
+                    "disk_file": "%s/%s%s" % (data_base_dir, constants.DISK_FILE_PREFIX, item.uuid),
                 }
                 disk_info.append(info)
         disk_info.append({
@@ -406,7 +463,8 @@ class TemplateController(BaseController):
             template.status = constants.STATUS_ERROR
             template.soft_update()
             return get_error_result("TemplateStartFail", name=template.name, data=str(e))
-        template.status = constants.STATUS_ACTIVE
+        if template.status != constants.STATUS_INSTALL:
+            template.status = constants.STATUS_ACTIVE
         template.soft_update()
         logger.info("start template %s success", instance_info)
         return get_error_result("Success", rep_json['msg'])
@@ -552,9 +610,12 @@ class TemplateController(BaseController):
             desktops = db_api.get_personal_desktop_with_all({'template_uuid': template_uuid})
             if desktops:
                 return get_error_result("TemplateInUse", name=template.name)
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            sys_base = constants.DEFAULT_SYS_PATH
+            data_base = constants.DEFAULT_DATA_PATH
 
         logger.info("delete template:%s", template_uuid)
-        sys_base, data_base = self._get_template_storage_path()
         images = self._get_deleted_images(template, template.version, sys_base, data_base)
         command_data = {
             "command": "delete",
@@ -606,7 +667,7 @@ class TemplateController(BaseController):
 
     def reset_template(self, template_uuid):
         """
-        重置模板，除了删除系统盘和数据盘，还要删除他们的base文件
+        重置模板
         :param template_uuid: the uuid of template
         :return:
         """
@@ -616,13 +677,15 @@ class TemplateController(BaseController):
             return get_error_result("TemplateNotExist")
 
         logger.info("reset template:%s", template_uuid)
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
+
         images = self._get_sync_images(template, template.version, sys_base, data_base)
         command_data = {
             "command": "reset",
             "handler": "TemplateHandler",
             "data": {
-                "image_version": template.version,
                 "instance": {
                     "uuid": template.uuid,
                     "name": template.name
@@ -648,8 +711,9 @@ class TemplateController(BaseController):
                             "uuid": template.uuid,
                             "name": template.name,
                         },
-                        "data_base": data_base,
-                        "disk_uuid": device.uuid,
+                        "disk_file": os.path.join(data_base, template_uuid, constants.DISK_FILE_PREFIX + device.uuid),
+                        "backing_file": os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                                     constants.IMAGE_FILE_PREFIX % str(1) + device.uuid),
                         "delete_base": True
                     }
                 }
@@ -674,12 +738,13 @@ class TemplateController(BaseController):
                             "disk": {
                                 'uuid': device.uuid,
                                 'dev': device.device_name,
-                                'image_id': device.uuid,
-                                'image_version': template.version,
                                 'boot_index': device.boot_index,
                                 'bus': 'virtio',
                                 'type': 'disk',
-                                'base_path': data_base
+                                "disk_file": "%s/%s%s" % (os.path.join(data_base, template_uuid),
+                                                          constants.DISK_FILE_PREFIX, device.uuid),
+                                "backing_file": os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                                             constants.IMAGE_FILE_PREFIX % str(1) + device.uuid)
                             }
                         }
                     }
@@ -694,89 +759,6 @@ class TemplateController(BaseController):
         template.soft_update()
         logger.info("reset the template success")
         return get_error_result("Success")
-
-    # def find_add_disk(self, value, template, data_base):
-    #     # 查找新加的磁盘
-    #     template_add_disks = list()
-    #     instance_add_disks = list()
-    #     add_disks = list()
-    #     is_add = False
-    #     for disk in value['devices']:
-    #         if not disk.get('uuid', None):
-    #             add_disks.append(disk)
-    #             is_add = True
-    #     if is_add:
-    #         if constants.EDUCATION_DESKTOP == template.classify:
-    #             desktops = db_api.get_desktop_with_all({'template_uuid': template.uuid})
-    #         elif constants.PERSONAL_DEKSTOP == template.classify:
-    #             desktops = db_api.get_personal_desktop_with_all({'template_uuid': template.uuid})
-    #         else:
-    #             desktops = []
-    #         for disk in add_disks:
-    #             # 模板和依赖模板创建的虚拟机都需要添加磁盘信息
-    #             logger.info("template add new disk:%s", disk)
-    #             zm = string.ascii_lowercase
-    #             disk_uuid = create_uuid()
-    #             template_info = {
-    #                 "uuid": disk_uuid,
-    #                 "type": constants.IMAGE_TYPE_DATA,
-    #                 "device_name": "vd%s" % zm[disk['inx'] + 1],
-    #                 "image_id": '',
-    #                 "instance_uuid": template.uuid,
-    #                 "boot_index": disk['inx'] + 1,
-    #                 "size": disk['size']
-    #             }
-    #             template_add_disks.append(template_info)
-    #             for desktop in desktops:
-    #                 instances = db_api.get_instance_with_all({'desktop_uuid': desktop.uuid})
-    #                 for instance in instances:
-    #                     info = {
-    #                         "uuid": create_uuid(),
-    #                         "type": template_info['type'],
-    #                         "device_name": template_info['device_name'],
-    #                         "image_id": disk_uuid,
-    #                         "instance_uuid": instance.uuid,
-    #                         "boot_index": template_info['boot_index'],
-    #                         "size": template_info['size']
-    #                     }
-    #                     instance_add_disks.append(info)
-    #
-    #             # 新加磁盘时，创建一个base磁盘文件，版本是1
-    #             base_path = os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
-    #             file = os.path.join(base_path, constants.IMAGE_FILE_PREFIX % str(1) + disk_uuid)
-    #             node = db_api.get_node_with_first({'uuid': template.host_uuid})
-    #             rep_json = self.create_file(node.ip, file, disk['size'])
-    #             if rep_json.get("code", -1) != 0:
-    #                 logger.error("create_file failed, node:%s, error:%s", node.ip, rep_json.get('data'))
-    #                 raise Exception("create file failed")
-    #             logger.info("create file %s success", file)
-    #             # 然后新建新加磁盘的差异盘
-    #             command_data = {
-    #                 "command": "attach_disk",
-    #                 "handler": "TemplateHandler",
-    #                 "data": {
-    #                     "instance": {
-    #                         "uuid": template.uuid,
-    #                         "name": template.name
-    #                     },
-    #                     "disk": {
-    #                         'uuid': disk_uuid,
-    #                         'dev': "vd%s" % zm[disk['inx'] + 1],
-    #                         'image_id': disk_uuid,
-    #                         'image_version': 1,
-    #                         'boot_index': disk['inx'] + 1,
-    #                         'bus': 'virtio',
-    #                         'type': 'disk',
-    #                         'base_path': data_base
-    #                     }
-    #                 }
-    #             }
-    #             rep_json = compute_post(node.ip, command_data)
-    #             if rep_json.get("code", -1) != 0:
-    #                 logger.error("attach disk failed, node:%s, error:%s", node.ip, rep_json.get('data'))
-    #                 raise Exception("attach disk file failed")
-    #             logger.info("attach disks success")
-    #     return template_add_disks, instance_add_disks
 
     def find_add_disk(self, value, template, data_base):
         # 查找新加的磁盘
@@ -821,12 +803,13 @@ class TemplateController(BaseController):
                         "disk": {
                             'uuid': disk_uuid,
                             'dev': "vd%s" % zm[disk['inx'] + 1],
-                            'image_id': disk_uuid,
-                            'image_version': 1,
                             'boot_index': disk['inx'] + 1,
                             'bus': 'virtio',
                             'type': 'disk',
-                            'base_path': data_base
+                            "disk_file": "%s/%s%s" % (os.path.join(data_base, template.uuid),
+                                                      constants.DISK_FILE_PREFIX, disk_uuid),
+                            "backing_file": os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                                         constants.IMAGE_FILE_PREFIX % str(1) + disk_uuid)
                         }
                     }
                 }
@@ -856,9 +839,9 @@ class TemplateController(BaseController):
                         if int(disk['size']) < int(device.size):
                             return get_error_result("TemplateDiskSizeError")
                         logger.info("disk %s extend size from %s to %s", device.device_name, device.size, disk['size'])
+                        base_dir = sys_base if constants.IMAGE_TYPE_SYSTEM == disk['type'] else data_base
                         image = {
-                            "image_id": disk['uuid'],
-                            "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == disk['type'] else data_base,
+                            "disk_file": os.path.join(base_dir, template.uuid, constants.DISK_FILE_PREFIX + device.uuid),
                             "size": int(disk['size']) - int(device.size)
                         }
                         images.append(image)
@@ -879,8 +862,10 @@ class TemplateController(BaseController):
                             "uuid": template.uuid,
                             "name": template.name,
                         },
-                        "data_base": data_base,
-                        "disk_uuid": device.uuid,
+                        "disk_file": "%s/%s%s" % (os.path.join(data_base, template.uuid),
+                                                  constants.DISK_FILE_PREFIX, device.uuid),
+                        "backing_file": os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                                     constants.IMAGE_FILE_PREFIX % str(1) + device.uuid),
                         "delete_base": False if hasattr(device, "instance_uuid") else True
                     }
                 }
@@ -995,6 +980,9 @@ class TemplateController(BaseController):
                 return get_error_result("IPNotInRange", ipaddr=value['bind_ip'])
             if template.bind_ip != value['bind_ip'] and value['bind_ip'] in education_used_ips:
                 return get_error_result("IPInUse")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         if template.status == constants.STATUS_ACTIVE:
             ret = self.stop_template(template_uuid)
             if ret.get('code') != 0:
@@ -1004,8 +992,6 @@ class TemplateController(BaseController):
             rep_json = self.update_ram_and_vcpu(value, template)
             if rep_json.get('code') != 0:
                 return rep_json
-
-            sys_base, data_base = self._get_template_storage_path()
             try:
                 template_disks, is_add = self.find_add_disk(value, template, data_base)
             except Exception as e:
@@ -1048,26 +1034,23 @@ class TemplateController(BaseController):
         logger.info("recreate the diff disk file, node:%s", ipaddr)
         return rep_json
 
-    def convert(self, ipaddr, template_uuid, version, system_uuid, image_id, new_uuid, sys_base):
+    def convert(self, ipaddr, backing_file, dest_file, need_convert=True):
         """
         在模板所在节点先合并差异文件生成新的基础镜像
-        如果版本为0，则根据image_id进行复制，否则进行合并
+        如果版本为0，则是直接复制镜像
         """
         command_data = {
             "command": "convert",
             "handler": "TemplateHandler",
             "data": {
-                "new_image_id": new_uuid,
                 "template": {
-                    "base_path": sys_base,
-                    "uuid": template_uuid,
-                    "system_uuid": system_uuid,
-                    "image_version": version,
-                    "image_id": image_id
+                    "backing_file": backing_file,
+                    "dest_file": dest_file,
+                    "need_convert": need_convert
                 }
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("convert the disk file finished, node:%s", ipaddr)
         return rep_json
 
@@ -1086,7 +1069,7 @@ class TemplateController(BaseController):
                 "disk_size": disk_size
             }
         }
-        rep_json = compute_post(ipaddr, command_data, timeout=600)
+        rep_json = compute_post(ipaddr, command_data, timeout=1200)
         logger.info("write head to image %s finished, node:%s, return:%s", image_path, ipaddr, rep_json)
         return rep_json
 
@@ -1104,7 +1087,7 @@ class TemplateController(BaseController):
         logger.info("detach_cdrom end, instance:%s", instance_info)
         return rep_json
 
-    def copy(self, host, version, image, task_id=None):
+    def copy(self, host, image, task_id=None):
         """
         在节点复制模板的系统盘和数据盘
         """
@@ -1112,11 +1095,10 @@ class TemplateController(BaseController):
             "command": "copy",
             "handler": "TemplateHandler",
             "data": {
-                "image_version": version,
                 "image": image
             }
         }
-        rep_json = compute_post(host['ipaddr'], command_data, timeout=600)
+        rep_json = compute_post(host['ipaddr'], command_data, timeout=1200)
         rep_json['task_id'] = task_id
         rep_json['host_uuid'] = host['host_uuid']
         rep_json['image_id'] = image['new_image_id']
@@ -1143,8 +1125,8 @@ class TemplateController(BaseController):
                 "image": image
             }
         }
-        rep_json = compute_post(host['ipaddr'], command_data, timeout=600)
-        logger.info("sync the image file end, image:%s, host:%s", image, host['ipaddr'])
+        rep_json = compute_post(host['ipaddr'], command_data, timeout=1800)
+        logger.info("sync the image file end, image:%s, host:%s,rep_json:%s", image, host['ipaddr'], rep_json)
         rep_json['task_id'] = task_id
         rep_json['host_uuid'] = host['host_uuid']
         rep_json['image_id'] = image['image_id']
@@ -1220,7 +1202,7 @@ class TemplateController(BaseController):
             backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + disk.uuid
             backing_file = os.path.join(backing_dir, backing_file_name)
             info = {
-                "disk_path": disk_path,
+                "disk_file": disk_path,
                 "backing_file": backing_file
             }
             disks.append(info)
@@ -1235,7 +1217,7 @@ class TemplateController(BaseController):
                 backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + disk.uuid
                 backing_file = os.path.join(backing_dir, backing_file_name)
                 info = {
-                    "disk_path": disk_path,
+                    "disk_file": disk_path,
                     "backing_file": backing_file
                 }
                 disks.append(info)
@@ -1250,6 +1232,13 @@ class TemplateController(BaseController):
         :param md5: Is it necessary to calculate the image file md5 sum
         :param update: if the add data disk need sync
         :return:
+            {
+                "image_id": "",             # 主要用于同步任务情况的记录
+                "disk_file": "",            # 虚拟机实际的磁盘文件
+                "backing_file": "",         # 虚拟机磁盘文件的base文件
+                "dest_path": "",            # 同步时的目的地址
+                "md5_sum": ""               # 虚拟机磁盘文件的md5值
+            }
         """
         images = list()
         devices = db_api.get_devices_by_instance(template.uuid)
@@ -1267,16 +1256,22 @@ class TemplateController(BaseController):
 
             if constants.IMAGE_TYPE_SYSTEM == disk.type and version < 1:
                 image_id = disk.image_id
+                backing_file_name = image_id
+                dest_file_name = image_id
             else:
                 image_id = disk.uuid
+                backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + image_id
+                dest_file_name = constants.IMAGE_FILE_PREFIX % str(version) + image_id
             base_path = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
+            backing_dir = os.path.join(base_path, constants.IMAGE_CACHE_DIRECTORY_NAME)
             template_dir = os.path.join(base_path, template.uuid)
             file_name = constants.DISK_FILE_PREFIX + disk.uuid
             image_path = os.path.join(template_dir, file_name)
             info = {
                 "image_id": image_id,
-                "image_path": image_path,
-                "base_path": base_path
+                "disk_file": image_path,
+                "backing_file": os.path.join(backing_dir, backing_file_name),
+                "dest_path": os.path.join(backing_dir, dest_file_name)
             }
             if md5:
                 logger.info("calculate the image file %s md5 sum", image_path)
@@ -1290,10 +1285,14 @@ class TemplateController(BaseController):
                     template_dir = os.path.join(data_base, template.uuid)
                     file_name = constants.DISK_FILE_PREFIX + device.uuid
                     image_path = os.path.join(template_dir, file_name)
+                    backing_dir = os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
+                    backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + device.uuid
+                    dest_file_name = constants.IMAGE_FILE_PREFIX % str(version) + device.uuid
                     info = {
                         "image_id": device.uuid,
-                        "image_path": image_path,
-                        "base_path": data_base
+                        "disk_file": image_path,
+                        "backing_file": os.path.join(backing_dir, backing_file_name),
+                        "dest_path": os.path.join(backing_dir, dest_file_name)
                     }
                     if md5:
                         logger.info("calculate the image file %s md5 sum", image_path)
@@ -1325,9 +1324,7 @@ class TemplateController(BaseController):
                 backing_file_name = image_id
             image_path = os.path.join(backing_dir, backing_file_name)
             info = {
-                "image_id": image_id,
-                "image_path": image_path,
-                "base_path": base_path
+                "backing_file": image_path
             }
             images.append(info)
         # 这边的都是数据盘
@@ -1341,36 +1338,37 @@ class TemplateController(BaseController):
                     backing_file_name = device.uuid
                 image_path = os.path.join(backing_dir, backing_file_name)
                 info = {
-                    "image_id": device.uuid,
-                    "image_path": image_path,
-                    "base_path": data_base
+                    "backing_file": image_path
                 }
                 images.append(info)
         logger.info("get template image info:%s", images)
         return images
 
-    def _get_copy_images(self, template, new_uuid, sys_base, data_base):
+    def _get_copy_images(self, template, new_uuid, sys_base, data_base, dest_sys_base, dest_data_base):
         disks = list()
         images = list()
         add_disks = list()
         devices = db_api.get_devices_by_instance(template.uuid)
         for disk in devices:
+            base_dir = sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base
+            dest_base_dir = dest_sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else dest_data_base
             disk_uuid = create_uuid()
             info = {
                 "image_id": disk.uuid,
-                # "image_type": disk.type,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base,
                 "new_image_id": disk_uuid,
+                "backing_file": os.path.join(base_dir, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                             constants.IMAGE_FILE_PREFIX % str(1) + disk.uuid),
+                "dest_file": os.path.join(dest_base_dir, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                          constants.IMAGE_FILE_PREFIX % str(1) + disk_uuid),
             }
             disks.append({
                 "uuid": disk_uuid,
                 "dev": disk.device_name,
                 "boot_index": disk.boot_index,
-                "image_version": 1,
-                # 复制后版本直接为1，差异盘已经存在，所以image_id是本身
-                "image_id": disk_uuid,
                 "size": "%dG" % disk.size,
-                "base_path": sys_base if constants.IMAGE_TYPE_SYSTEM == disk.type else data_base,
+                "disk_file": os.path.join(dest_base_dir, new_uuid, constants.DISK_FILE_PREFIX + disk_uuid),
+                "backing_file": os.path.join(dest_base_dir, constants.IMAGE_CACHE_DIRECTORY_NAME,
+                                             constants.IMAGE_FILE_PREFIX % str(1) + disk_uuid),
             })
             add_disks.append({
                 "uuid": disk_uuid,
@@ -1385,25 +1383,40 @@ class TemplateController(BaseController):
         logger.info("get template copy image info:%s", images)
         return images, disks, add_disks
 
-    def _get_template_storage_path(self):
-        template_sys = db_api.get_template_sys_storage()
-        template_data = db_api.get_template_data_storage()
-        if not template_sys:
-            sys_base = constants.DEFAULT_SYS_PATH
-        else:
-            sys_base = template_sys.path
-        sys_path = os.path.join(sys_base, 'instances')
-        if not template_data:
-            data_base = constants.DEFAULT_DATA_PATH
-        else:
-            data_base = template_data.path
-        data_path = os.path.join(data_base, 'datas')
-        return sys_path, data_path
+    # def _get_template_storage_path(self):
+    #     template_sys = db_api.get_template_sys_storage()
+    #     template_data = db_api.get_template_data_storage()
+    #     if not template_sys:
+    #         sys_base = constants.DEFAULT_SYS_PATH
+    #     else:
+    #         sys_base = template_sys.path
+    #     sys_path = os.path.join(sys_base, 'instances')
+    #     if not template_data:
+    #         data_base = constants.DEFAULT_DATA_PATH
+    #     else:
+    #         data_base = template_data.path
+    #     data_path = os.path.join(data_base, 'datas')
+    #     return sys_path, data_path
+
+    def _get_template_storage(self, node_uuid=None):
+        if not node_uuid:
+            node = db_api.get_controller_node()
+            node_uuid = node.uuid
+        template_sys = db_api.get_template_sys_storage(node_uuid)
+        template_data = db_api.get_template_data_storage(node_uuid)
+        if not (template_sys and template_data):
+            return None, None
+        sys_path = os.path.join(template_sys.path, 'instances')
+        data_path = os.path.join(template_data.path, 'datas')
+        return {"path": sys_path, "uuid": template_sys.uuid, 'free': template_sys.free}, \
+               {"path": data_path, "uuid": template_data.uuid, 'free': template_data.free}
 
     def node_sync_image(self, pool_uuid, ipaddr, host_uuid):
         try:
             controller = db_api.get_controller_image()
-            sys_base, data_base = self._get_template_storage_path()
+            sys_base, data_base = self._get_template_storage()
+            if not (sys_base and sys_base):
+                return get_error_result("InstancePathNotExist")
             templates = db_api.get_template_with_all({"pool_uuid": pool_uuid})
             base_images = db_api.get_images_with_all({"pool_uuid": pool_uuid})
             # 同步基础镜像
@@ -1416,8 +1429,9 @@ class TemplateController(BaseController):
                 for image in base_images:
                     info = {
                         "image_id": image['uuid'],
-                        "image_path": image['path'],
-                        "base_path": sys_base,
+                        "disk_file": image['path'],
+                        "backing_file": image['path'],
+                        "dest_path": image['path'],
                         "md5_sum": image['md5_sum']
                     }
                     task = Task(image_id=image['uuid'], host_uuid=host_uuid, version=0)
@@ -1440,13 +1454,11 @@ class TemplateController(BaseController):
 
             for template in templates:
                 if template.version > 0:
-                    image_diff = self._get_sync_images(template, template.version, sys_base, data_base)
+                    image_diff = self._get_sync_images(template, 1, sys_base['path'], data_base['path'])
+                    # 这里只是同步base文件，因此源文件和md5都要更新
                     for image in image_diff:
-                        backing_dir = os.path.join(image['base_path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
-                        backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + image['image_id']
-                        image_path = os.path.join(backing_dir, backing_file_name)
-                        image['image_path'] = image_path
-                        image["md5_sum"] = get_file_md5(image_path)
+                        image['disk_file'] = image['backing_file']
+                        image['md5_sum'] = get_file_md5(image['backing_file'])
                     logger.info("the image need to sync:%s", image_diff)
                     with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
                         for image in image_diff:
@@ -1471,7 +1483,7 @@ class TemplateController(BaseController):
                                 task.end(task_id, "sync the image to host:%s success" % rep_json['ipaddr'])
                     logger.info("sync the diff image to new node. template:%s", template.name)
         except Exception as e:
-            logger.error("sys images failed:%s", e)
+            logger.exception("sys images failed:%s", e)
 
     def delete_instance_only(self, ipaddr, info):
         try:
@@ -1557,6 +1569,14 @@ class TemplateController(BaseController):
         1、时区问题，保存的默认是本地时间，如果服务器时区变化，会有问题
         """
         run_date = datetime.strptime(upgrade_time, "%Y-%m-%d %H:%M:%S")
+        logger.info("save template run_date:%s", run_date)
+        template = db_api.get_instance_template(template_uuid)
+        if not template:
+            logger.error("instance template: %s not exist", template_uuid)
+            return get_error_result("TemplateNotExist")
+        result = self.check_need_resync(template)
+        if result:
+            return get_error_result("TemplateNeedResync", node=result)
         if datetime.now() > run_date:
             logger.info("the upgrade time is less than now, skip")
             return get_error_result("UpdateTimeError")
@@ -1568,7 +1588,6 @@ class TemplateController(BaseController):
             logger.info("the template task already exists, remove")
             YzyAPScheduler().remove_job(job_id)
         job_id = create_uuid()
-        logger.info("save template run_date:%s", run_date)
         trigger = DateTrigger(run_date=run_date)
         YzyAPScheduler().add_job(jobid=job_id, func=self._save_template,
                                  args=(template_uuid, ), trigger=trigger)
@@ -1584,7 +1603,23 @@ class TemplateController(BaseController):
         :return:
         """
         logger.info("begin save template:%s", template_uuid)
+        # 添加任务信息数据记录
+        task_data = {
+            "uuid": create_uuid(),
+            "task_uuid": template_uuid,
+            "name": constants.NAME_TYPE_MAP[13],
+            "status": constants.TASK_RUNNING,
+            "type": 13
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": task_data['uuid']})
+
         template = db_api.get_instance_template(template_uuid)
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("InstancePathNotExist")
         try:
             if not create:
                 pre_status = template.status
@@ -1601,6 +1636,8 @@ class TemplateController(BaseController):
                     template.status = pre_status
                     template.soft_update()
                     logger.error("stop template %s failed:%s", template.uuid, e)
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
                     return get_error_result("TemplateStopError", name=template.name, data=str(e))
             controller_image = db_api.get_controller_image()
             controller = db_api.get_controller_node()
@@ -1612,21 +1649,26 @@ class TemplateController(BaseController):
                     os.remove(filepath)
             except:
                 pass
+            personal_maintenance_uuid = []
+            desktop_active_uuid = []
             if constants.EDUCATION_DESKTOP == template.classify:
                 desktops = db_api.get_desktop_with_all({'template_uuid': template_uuid})
                 for desktop in desktops:
+                    if desktop.active:
+                        desktop_active_uuid.append(desktop.uuid)
                     desktop.active = False
                     desktop.soft_update()
             elif constants.PERSONAL_DEKSTOP == template.classify:
                 desktops = db_api.get_personal_desktop_with_all({'template_uuid': template_uuid})
                 for desktop in desktops:
+                    if not desktop.maintenance:
+                        personal_maintenance_uuid.append(desktop.uuid)
                     desktop.maintenance = True
                     desktop.soft_update()
             else:
                 desktops = []
 
             # 第二步，合并差异磁盘前，要关闭所有链接的桌面
-            sys_base, data_base = self._get_instance_storage_path()
             all_task = list()
             failed_num = 0
             success_num = 0
@@ -1636,11 +1678,13 @@ class TemplateController(BaseController):
                 with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
                     for instance in instances:
                         logger.info("delete instance %s thread", instance.uuid)
+                        ins_sys, ins_data = self._get_storage_path_with_uuid(instance.sys_storage,
+                                                                               instance.data_storage)
                         info = {
                             "uuid": instance.uuid,
                             "name": instance.name,
-                            "sys_base": sys_base,
-                            "data_base": data_base
+                            "sys_base": ins_sys,
+                            "data_base": ins_data
                         }
                         node = db_api.get_node_by_uuid(instance.host_uuid)
                         future = executor.submit(self.delete_instance_only, node.ip, info)
@@ -1653,7 +1697,6 @@ class TemplateController(BaseController):
                             success_num += 1
 
             new_version = template.version + 1
-            sys_base, data_base = self._get_template_storage_path()
             images = self._get_sync_images(template, new_version, sys_base, data_base, md5=True, update=True)
             logger.info("sync the diff disk file to compute nodes")
             nodes = db_api.get_node_by_pool_uuid(template.pool_uuid)
@@ -1714,6 +1757,8 @@ class TemplateController(BaseController):
                         template.status = constants.STATUS_ERROR
                         template.updated_time = datetime.utcnow()
                         template.soft_update()
+                        task_obj.update({"status": constants.TASK_ERROR})
+                        task_obj.soft_update()
                         return get_error_result("TemplateUpdateError", name=template.name)
                     else:
                         logger.info("sync the image %s to host:%s success", rep_json['image_id'], rep_json['ipaddr'])
@@ -1726,6 +1771,8 @@ class TemplateController(BaseController):
                 template.status = constants.STATUS_ERROR
                 template.updated_time = datetime.utcnow()
                 template.soft_update()
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("TemplateRecreateFail", name=template.name)
 
             # 第四步是新建所有桌面，并且处于关机状态
@@ -1771,6 +1818,9 @@ class TemplateController(BaseController):
                     device.deleted = True
                 # 模板删除了磁盘，更新时需要将引用的桌面已有磁盘都删除
                 elif constants.DEVICE_NEED_DELETED == device.state:
+                    backing_dir = os.path.join(data_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
+                    backing_file_name = constants.IMAGE_FILE_PREFIX % str(1) + device.uuid
+                    backing_file = os.path.join(backing_dir, backing_file_name)
                     logger.info("device %s state is need delete", device.device_name)
                     origin_device = db_api.get_devices_with_first({"uuid": device.uuid})
                     for desktop in desktops:
@@ -1784,10 +1834,8 @@ class TemplateController(BaseController):
                         "command": "delete_base",
                         "handler": "TemplateHandler",
                         "data": {
-                            "image_version": 1,
                             "image": {
-                                "image_id": device.uuid,
-                                "base_path": data_base
+                                "disk_file": backing_file
                             }
                         }
                     }
@@ -1820,8 +1868,10 @@ class TemplateController(BaseController):
                 with ThreadPoolExecutor(max_workers=constants.MAX_THREADS) as executor:
                     for instance in instances:
                         logger.info("recreate instance %s thread", instance.uuid)
+                        ins_sys, ins_data = self._get_storage_path_with_uuid(instance.sys_storage,
+                                                                             instance.data_storage)
                         future = executor.submit(self.create_instance, desktop, subnet, instance,
-                                                 new_version, sys_base, data_base, power_on=False)
+                                                 ins_sys, ins_data, power_on=False)
                         desktop_tasks.append(future)
                     for future in as_completed(desktop_tasks):
                         result = future.result()
@@ -1830,11 +1880,13 @@ class TemplateController(BaseController):
                         else:
                             success_num += 1
                 if constants.EDUCATION_DESKTOP == template.classify:
-                    desktop.active = True
-                    desktop.soft_update()
+                    if desktop.uuid in desktop_active_uuid:
+                        desktop.active = True
+                        desktop.soft_update()
                 elif constants.PERSONAL_DEKSTOP == template.classify:
-                    desktop.maintenance = False
-                    desktop.soft_update()
+                    if desktop.uuid in personal_maintenance_uuid:
+                        desktop.maintenance = False
+                        desktop.soft_update()
                 db.session.flush()
 
             # 保存成功
@@ -1847,6 +1899,10 @@ class TemplateController(BaseController):
             template.status = constants.STATUS_ERROR
             template.updated_time = datetime.utcnow()
             template.soft_update()
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success")
 
     def copy_template(self, data):
@@ -1865,20 +1921,38 @@ class TemplateController(BaseController):
             }
         :return:
         """
+        uuid = create_uuid()
+        # 添加任务信息数据记录
+        task_uuid = create_uuid()
+        task_data = {
+            "uuid": task_uuid,
+            "task_uuid": uuid,
+            "name": constants.NAME_TYPE_MAP[8],
+            "status": constants.TASK_RUNNING,
+            "type": 8
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": task_uuid})
         template = db_api.get_template_with_all({'name': data['name']})
         if template:
             logger.error("template: %s already exist", data['name'])
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateAlreadyExist", name=data['name'])
 
         template_uuid = data['template_uuid']
         template = db_api.get_instance_template(template_uuid)
         if not template:
             logger.error("instance template: %s not exist", template_uuid)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateNotExist")
 
         network = db_api.get_network_by_uuid(data['network_uuid'])
         if not network:
             logger.error("network: %s not exist", data['network_uuid'])
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("NetworkInfoNotExist")
         # IP分配检测
         subnet_uuid = data.get('subnet_uuid', None)
@@ -1886,6 +1960,8 @@ class TemplateController(BaseController):
             subnet = db_api.get_subnet_by_uuid(data['subnet_uuid'])
             if not subnet:
                 logger.error("subnet: %s not exist", data['subnet_uuid'])
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("SubnetNotExist")
             subnet = subnet.dict()
         else:
@@ -1904,22 +1980,42 @@ class TemplateController(BaseController):
                         data['bind_ip'] = ipaddr
                         break
                 else:
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
                     return get_error_result("IPNotEnough")
             else:
                 # 选择子网并且固定IP，检查该IP是否已被占用
                 logger.info('education_used_ips: %s, bind_ip: %s' % (education_used_ips, data['bind_ip']))
                 if data['bind_ip'] in education_used_ips:
+                    task_obj.update({"status": constants.TASK_ERROR})
+                    task_obj.soft_update()
                     return get_error_result("IPInUse")
 
             if data['bind_ip'] not in all_ips:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("IPNotInRange", ipaddr=data['bind_ip'])
             if template.bind_ip != data['bind_ip'] and data['bind_ip'] in education_used_ips:
+                task_obj.update({"status": constants.TASK_ERROR})
+                task_obj.soft_update()
                 return get_error_result("IPInUse")
         logger.info("check bind_ip info")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("InstancePathNotExist")
+        cur_sys, cur_data = self._get_template_storage()
+        if not (sys_base and sys_base):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("InstancePathNotExist")
 
         # 如果被复制的模板有节点异常，先要重传
         result = self.check_need_resync(template)
         if result:
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateNeedResync", node=result)
         # mac和port分配
         self.used_macs = self.get_used_macs()
@@ -1932,7 +2028,7 @@ class TemplateController(BaseController):
         else:
             node = db_api.get_controller_node()
         values = {
-            "uuid": create_uuid(),
+            "uuid": uuid,
             "name": data['name'],
             "desc": data.get('desc'),
             "owner_id": data['owner_id'],
@@ -1940,6 +2036,8 @@ class TemplateController(BaseController):
             "host_uuid": node.uuid,
             "network_uuid": data['network_uuid'],
             "subnet_uuid": data.get('subnet_uuid', None),
+            "sys_storage": cur_sys['uuid'],
+            "data_storage": cur_data['uuid'],
             "version": 1,
             "bind_ip": data.get('bind_ip'),
             "os_type": template.os_type,
@@ -1961,8 +2059,8 @@ class TemplateController(BaseController):
             "uuid": node.uuid,
             "ipaddr": node.ip
         }
-        sys_base, data_base = self._get_template_storage_path()
-        images, kvm_disks, add_disks = self._get_copy_images(template, new_template.uuid, sys_base, data_base)
+        images, kvm_disks, add_disks = self._get_copy_images(template, new_template.uuid,
+                                                             sys_base, data_base, cur_sys['path'], cur_data['path'])
         db_api.insert_with_many(models.YzyInstanceDeviceInfo, add_disks)
         # 注意线程后台运行，不能传输数据库对象，会有session绑定问题
         task = Thread(target=self.create_template_thread, args=(node_info, values, subnet, template_uuid, pre_status,
@@ -1973,6 +2071,8 @@ class TemplateController(BaseController):
             "name": data['name'],
             "version": 1
         }
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success", ret)
 
     def create_template_thread(self, node_info, data, subnet, origin, pre_status, images, kvm_disks, power_on=False):
@@ -1993,7 +2093,7 @@ class TemplateController(BaseController):
                                (image['image_id'], image['new_image_id'], host['ipaddr']))
                     logger.info("copy image %s to %s in host %s, task_id:%s", image['image_id'],
                                 image['new_image_id'], host['ipaddr'], task_id)
-                    future = executor.submit(self.copy, host, 1, image, task_id)
+                    future = executor.submit(self.copy, host, image, task_id)
                     all_task.append(future)
             for future in as_completed(all_task):
                 rep_json = future.result()
@@ -2011,7 +2111,7 @@ class TemplateController(BaseController):
             # 获取网络信息，保证网桥等设备存在
             net = db_api.get_interface_by_network(data['network_uuid'], node_info['uuid'])
             if not net:
-                logger.error("node %s network info %s error",node_info['uuid'], data['network_uuid'])
+                logger.error("node %s network info %s error", node_info['uuid'], data['network_uuid'])
                 return get_error_result("NodeNetworkInfoError")
 
             vif_info = {
@@ -2076,9 +2176,11 @@ class TemplateController(BaseController):
 
     def get_downloading_path(self, template_uuid):
         template = db_api.get_instance_template(template_uuid)
-        sys_base, data_base = self._get_template_storage_path()
+        sys_base, data_base = self._get_template_storage()
+        if not (sys_base and sys_base):
+            return get_error_result("InstancePathNotExist")
         sys_info = db_api.get_devices_with_first({'instance_uuid': template.uuid, 'type': constants.IMAGE_TYPE_SYSTEM})
-        backing_path = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
+        backing_path = os.path.join(sys_base['path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
         file_name = "%s_c%s_r%s_d%s" % ((template['name'] + '_' + template['uuid']),
                                         template['vcpu'], template['ram'], sys_info['size'])
         dest_path = os.path.join(backing_path, file_name)
@@ -2092,50 +2194,79 @@ class TemplateController(BaseController):
                 return free
 
     def download_template(self, template_uuid):
+        # 添加任务信息记录
+        task_data = {
+            "uuid": create_uuid(),
+            "task_uuid": template_uuid,
+            "name": constants.NAME_TYPE_MAP[9],
+            "status": constants.TASK_RUNNING,
+            "type": 9,
+        }
+        db_api.create_task_info(task_data)
+        task_obj = db_api.get_task_info_first({"uuid": task_data['uuid']})
         template = db_api.get_instance_template(template_uuid)
         if not template:
             logger.error("instance template: %s not exist", template_uuid)
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("TemplateNotExist")
         if constants.STATUS_DOWNLOADING == template.status:
             logger.error("template is already in downloading")
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("Success")
-
-        sys_base, data_base = self._get_template_storage_path()
+        # 下载时，将convert生产的目标文件放到当前存储路径下
+        cur_sys_base, cur_data_base = self._get_template_storage()
+        if not (cur_sys_base and cur_data_base):
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
+            return get_error_result("InstancePathNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
         node = db_api.get_node_with_first({'uuid': template['host_uuid']})
         sys_info = db_api.get_devices_with_first(
             {'instance_uuid': template['uuid'], 'type': constants.IMAGE_TYPE_SYSTEM})
         image_info = {
-            "image_id": sys_info.image_id,
+            "need_convert": True if template.version > 0 else False,
             "disk_uuid": sys_info.uuid,
             "size": sys_info.size
         }
         # 下载合成后还需要写头部信息，因此需要两倍空间
-        free = self.get_template_sys_space(node.uuid)
+        free = round(cur_sys_base['free']/1024/1024/1024, 2)
         total_size = 0
+        # 获取当前磁盘的上层backing_file
         backing_dir = os.path.join(sys_base, constants.IMAGE_CACHE_DIRECTORY_NAME)
-        file_path = os.path.join(backing_dir, constants.IMAGE_FILE_PREFIX % str(1) + sys_info.uuid)
-        total_size += round(os.path.getsize(file_path) / 1024 / 1024 / 1024, 2)
+        backing_file = os.path.join(backing_dir, constants.IMAGE_FILE_PREFIX % str(1) + sys_info.uuid)
+        image_info['backing_file'] = backing_file
+        total_size += round(os.path.getsize(backing_file) / 1024 / 1024 / 1024, 2)
         if sys_info.image_id:
             image = db_api.get_image_with_first({'uuid': sys_info.image_id})
             total_size += image.size
         if total_size * 2 > free:
             logger.exception("the disk size in not enough, return")
+            task_obj.update({"status": constants.TASK_ERROR})
+            task_obj.soft_update()
             return get_error_result("SpaceNotEnough")
 
+        # convert后的目的地址
+        cur_backing_dir = os.path.join(cur_sys_base['path'], constants.IMAGE_CACHE_DIRECTORY_NAME)
+        new_uuid = template.name + '_' + template.uuid
+        dest_file = os.path.join(cur_backing_dir, new_uuid)
+        image_info['dest_file'] = dest_file
         pre_status = template['status']
         template.status = constants.STATUS_DOWNLOADING
         template.soft_update()
         logger.info("start downloading thread")
-        task = Thread(target=self.download_thread, args=(node.ip, template_uuid, pre_status, sys_base, image_info, ))
+        task = Thread(target=self.download_thread, args=(node.ip, template_uuid, pre_status, image_info, ))
         task.start()
+        task_obj.update({"status": constants.TASK_COMPLETE})
+        task_obj.soft_update()
         return get_error_result("Success")
 
-    def download_thread(self, ipaddr, template_uuid, pre_status, sys_base, image_info):
+    def download_thread(self, ipaddr, template_uuid, pre_status, image_info):
         template = db_api.get_instance_template(template_uuid)
         logger.info("start download template:%s", template.name)
         new_uuid = template.name + '_' + template.uuid
-        convert = self.convert(ipaddr, template.uuid,
-                               template.version, image_info['disk_uuid'], image_info['image_id'], new_uuid, sys_base)
+        convert = self.convert(ipaddr, image_info['backing_file'], image_info['dest_file'], image_info['need_convert'])
         if convert.get("code", -1) != 0:
             logger.error("convert template: %s failed:%s", template_uuid, convert['msg'])
             template.status = pre_status
@@ -2238,7 +2369,13 @@ class TemplateController(BaseController):
         return get_error_result("Success")
 
     def retransmit(self, data):
-        sys_base, data_base = self._get_template_storage_path()
+        device = db_api.get_devices_with_first({"uuid": data['image_id']})
+        template = db_api.get_instance_template(device.instance_uuid)
+        if not template:
+            return get_error_result("TemplateNotExist")
+        sys_base, data_base = self._get_storage_path_with_uuid(template.sys_storage, template.data_storage)
+        if not (sys_base and data_base):
+            return get_error_result("InstancePathNotExist")
         if constants.TEMPLATE_SYS == data['role']:
             base_path = sys_base
         elif constants.TEMPLATE_DATA == data['role']:
@@ -2264,8 +2401,9 @@ class TemplateController(BaseController):
         controller_image = db_api.get_controller_image()
         image = {
             "image_id": data['image_id'],
-            "image_path": image_path,
-            "base_path": base_path,
+            "disk_file": image_path,
+            "backing_file": image_path,
+            "dest_path": image_path,
             "md5_sum": get_file_md5(image_path)
         }
         task = Task(image_id=image['image_id'], host_uuid=node.uuid, version=data['version'])

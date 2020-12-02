@@ -66,12 +66,15 @@ class VoiDesktopController(BaseController):
             "os_type": template.os_type,
             "sys_restore": data['sys_restore'],
             "data_restore": data['data_restore'],
+            "sys_reserve_size": data['sys_reserve_size'],
+            "data_reserve_size": data['data_reserve_size'],
             "prefix": data['prefix'],
+            "diff_mode": data.get("diff_mode", 0),
             "use_bottom_ip": data.get('use_bottom_ip', True),
             "ip_detail": json.dumps(data['ip_detail']) if data.get('ip_detail') else '',
             # "postfix": data.get('postfix', 1),
             # "postfix_start": data.get('postfix_start', 1),
-            "active": False,
+            "active": True,             # 默认激活
             "default": False if has_group else True,
             "show_info": data.get('show_info', False),
             "auto_update": data.get('auto_update', False)

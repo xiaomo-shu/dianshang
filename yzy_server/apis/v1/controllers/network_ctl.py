@@ -426,6 +426,12 @@ class NetworkController(object):
                 if len(personal_desktops_names) > 0:
                     prompt_info.append("子网 %s 被桌面 %s 所引用" % (subnet.name, ','.join(personal_desktops_names)))
                     continue
+                # 判断子网是否被VOI使用
+                voi_templates = db_api.get_voi_template_with_all({'deleted': False, 'subnet_uuid': subnet_uuid})
+                voi_template_names = list(map(lambda template: template.name, voi_templates))
+                if len(voi_template_names) > 0:
+                    prompt_info.append("子网 %s 被VOI模板 %s 所引用" % (subnet.name, ','.join(voi_template_names)))
+                    continue
                 subnet.soft_delete()
             if len(prompt_info) > 0:
                 return build_result("SubnetDeleteInfo")

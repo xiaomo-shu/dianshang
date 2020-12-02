@@ -1,6 +1,6 @@
 import logging
 from flask.views import MethodView
-from flask import request
+from flask import request, jsonify
 from common.utils import build_result, time_logger
 from yzy_server.apis.v1 import api_v1
 from yzy_server.apis.v1.controllers.node_ctl import NodeController
@@ -53,6 +53,71 @@ class ControllerAPI(MethodView):
                 result = self.node.get_controller_list()
                 if result:
                     return result
+            elif action == "enable_ha":
+                """
+                {
+                    "update_ip_data": {
+                        "uuid": "ea75137d-076f-40ae-96f5-675b34d77e41",
+                        "nic_uuid": "194279f3-31db-4ce0-9e46-39ffbf257f64",
+                        "nic_name": "eth0",
+                        "node_ip": "127.0.0.1",
+                        "ip": "172.16.1.199",
+                        "netmask": "255.255.255.0",
+                        "ha_flag": True
+                    },
+                    "enable_ha_data": {
+                        "vip": "172.16.1.66",
+                        "netmask": "255.255.255.0",
+                        "sensitivity": 60,
+                        "quorum_ip": "172.16.1.254",
+                        "master_ip": "172.16.1.66",
+                        "backup_ip": "172.16.1.88",
+                        "master_nic": "eth0",
+                        "backup_nic": "eth0",
+                        "master_uuid": "194279f3-31db-4ce0-9e46-39ffbf257f64",
+                        "backup_uuid": "5507fd59-8d3a-4ea0-b8fe-85cd52c173e9",
+                        "master_nic_uuid": "194279f3-31db-4ce0-9e46-39ffbf257f64",
+                        "backup_nic_uuid": "5507fd59-8d3a-4ea0-b8fe-85cd52c173e9"
+                    }
+                }
+                """
+                return self.node.enable_ha(data)
+            elif action == "disable_ha":
+                """
+                {
+                    "ha_info_uuid": "82d56980-7b6d-4086-a9b9-814a2c045f62"
+                }
+                """
+                return self.node.disable_ha(data)
+            elif action == "switch_ha_master":
+                """
+                {
+                    "new_vip_host_ip": "172.16.1.88",
+                    "vip": "172.16.1.199"
+                }
+                """
+                return self.node.switch_ha_master(data)
+            elif action == "ha_status":
+                """
+                    {
+                        "ha_info_uuid": ""
+                    }
+                """
+                return self.node.ha_status(data)
+            elif action == "check_ha_done":
+                """
+                    {}
+                """
+                return self.node.check_ha_done()
+            elif action == "ha_sync_web_post":
+                """
+                    {
+                        "paths": ["/opt/slow/iso/Git-2.23.0-32-bit.exe.iso"]
+                    }
+                """
+                return self.node.ha_sync_web_post(data)
+            elif action == "get_system_time":
+                return self.node.get_system_run_time(data)
             return build_result("Success", ret)
         except Exception as e:
             logger.error("contorller action %s failed:%s", action, e, exc_info=True)
@@ -65,10 +130,14 @@ class NodeAPI(MethodView):
 
     @time_logger
     def get(self, action):
-        if action == "ha_sync":
-            path = request.args.get('path', '')
-            logger.info("the sync path:%s", path)
-            return self.node.ha_sync(path)
+        try:
+            if action == "ha_sync":
+                path = request.args.get('path', '')
+                logger.info("the sync path:%s", path)
+                return self.node.ha_sync(path)
+        except Exception as e:
+            logger.error("node action %s failed:%s", action, e, exc_info=True)
+            return build_result("OtherError")
 
     @time_logger
     def post(self, action):
@@ -139,6 +208,9 @@ class NodeAPI(MethodView):
                 master_image_nic = data.get("master_image_nic", None)
                 master_image_ip = data.get("master_image_ip", None)
                 return self.node.check_image_ip(ip, master_image_nic,master_image_ip)
+            elif action == "ping_ip":
+                ip = data.get("ip", None)
+                return self.node.ping_ip(ip)
             elif action == "update_info":
                 return self.node.update_info(data)
             elif action == "restart_service":
@@ -242,8 +314,21 @@ class NodeAPI(MethodView):
                     }
                 """
                 return self.node.change_master(data)
+            elif action == "disk_part":
+                result = self.node.get_disk_parts(data)
+            elif action == "vg_detail":
+                result = self.node.vg_detail(data)
+            elif action == "extend_vg":
+                result = self.node.extend_vg(data)
+            elif action == "extend_lv":
+                result = self.node.extend_lv(data)
+            elif action == "create_lv":
+                result = self.node.create_lv(data)
 
-            return build_result("Success", ret)
+            if result and isinstance(result, dict):
+                return jsonify(result)
+            else:
+                return build_result("Success", ret)
         except Exception as e:
             logger.error("node action %s failed:%s", action, e, exc_info=True)
             return build_result("OtherError")

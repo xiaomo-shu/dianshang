@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import multiprocessing
 import os
+from dynaconf import LazySettings
 from common.utils import _ConfigParser
 from common import constants
 
 basedir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+settings = LazySettings(ROOT_PATH_FOR_DYNACONF=constants.BASE_DIR)
 
 
 class BaseConfig:
@@ -18,18 +20,25 @@ class BaseConfig:
     SECRET_KEY = os.getenv('SECRET_KEY', 'a secret string')
 
     # 数据库配置
-    DATABASE_HOST = '127.0.0.1'
-    DATABASE_PORT = 3306
-    DATABASE_USER = 'root'
-    DATABASE_PASSWORD = '123qwe,.'
-    DATABASE_NAME = 'yzy_kvm_db'
+    DATABASE_HOST = settings.get('HOST', '127.0.0.1')
+    DATABASE_PORT = settings.get('PORT', 3306)
+    DATABASE_USER = settings.get('USER', 'root')
+    DATABASE_PASSWORD = settings.get('PASSWORD', '123qwe,.')
+    DATABASE_NAME = settings.get('NAME', 'yzy_kvm_db')
+    ROOT_PASSWORD = settings.get('ROOT_PASSWORD', '123qwe,.')
+    # DATABASE_HOST = '127.0.0.1'
+    # DATABASE_PORT = 3306
+    # DATABASE_USER = 'root'
+    # DATABASE_PASSWORD = '123qwe,.'
+    # DATABASE_NAME = 'yzy_kvm_db'
     SQLALCHEMY_DATABASE_URI = "mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db_name}?charset=utf8" \
         .format(**{"user": DATABASE_USER, "password": DATABASE_PASSWORD, "host": DATABASE_HOST,
                    "port": DATABASE_PORT, "db_name": DATABASE_NAME})
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_POOL_SIZE = 5
+    SQLALCHEMY_POOL_SIZE = 50
     SQLALCHEMY_POOL_RECYCLE = 60 * 60
     # SQLALCHEMY_POOL_TIMEOUT = 28800
+    SQLALCHEMY_ENGINE_OPTIONS = {'pool_pre_ping': True}
 
     # gunicorn配置
     default_workers = multiprocessing.cpu_count() * 2 + 1
@@ -46,9 +55,9 @@ class BaseConfig:
     PID_FILE = 'yzy_terminal_agent.pid'
 
     # redis
-    REDIS_HOST = "127.0.0.1"
+    REDIS_HOST = settings.get('REDIS_HOST', '127.0.0.1')
     REDIS_PASSWORD = ""
-    REDIS_PORT = 6379
+    REDIS_PORT = settings.get('REDIS_PORT', '6379')
     REDIS_DB = 0
 
     @classmethod

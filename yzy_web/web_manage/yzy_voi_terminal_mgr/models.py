@@ -37,15 +37,21 @@ class YzyVoiTorrentTask(SoftDeletableModel):
     torrent_name = models.CharField(max_length=64)
     torrent_path = models.CharField(max_length=200)
     torrent_size = models.IntegerField()
+    desktop_name = models.CharField(max_length=32)
     template_uuid = models.CharField(max_length=64)
     disk_uuid = models.CharField(max_length=64)
     disk_name = models.CharField(max_length=64)
+    disk_size = models.FloatField(default=0)
     terminal_mac = models.CharField(max_length=32)
     terminal_ip = models.CharField(max_length=32)
     type = models.IntegerField()
     status = models.IntegerField()
+    state = models.CharField(max_length=32)
     process = models.IntegerField()
     download_rate = models.IntegerField()
+    upload_rate = models.IntegerField()
+    batch_no = models.IntegerField()
+    sum = models.IntegerField()
     created_at = models.DateTimeField(blank=True, null=True)
     updated_at = models.DateTimeField(blank=True, null=True)
 
@@ -63,6 +69,8 @@ class YzyVoiDesktop2(SoftDeletableModel):
     os_type = models.CharField(max_length=64)
     sys_restore = models.IntegerField(default=1)
     data_restore = models.IntegerField(default=1)
+    sys_reserve_size = models.IntegerField(default=0)
+    data_reserve_size = models.IntegerField(default=0)
     prefix = models.CharField(max_length=128, default='PC')
     use_bottom_ip = models.BooleanField(default=True)
     ip_detail = models.TextField()
@@ -82,3 +90,28 @@ class YzyVoiDesktop2(SoftDeletableModel):
     class Meta:
         db_table = 'yzy_voi_desktop_group'
         ordering = ['-active', 'id']
+
+
+# class YzyVoiTerminalToDesktops(models.Model):
+#     id = models.BigAutoField(primary_key=True)
+#     uuid = models.CharField(max_length=64)
+#     terminal_uuid = models.CharField(max_length=64)
+#     group_uuid = models.CharField(max_length=64)
+#     desktop_group_uuid = models.CharField(max_length=64)
+#     terminal_mac = models.CharField(max_length=20)
+#     desktop_is_dhcp = models.IntegerField()
+#     desktop_ip = models.CharField(max_length=16)
+#     desktop_mask = models.CharField(max_length=16)
+#     desktop_gateway = models.CharField(max_length=16)
+#     desktop_dns1 = models.CharField(max_length=16)
+#     desktop_dns2 = models.CharField(max_length=16, blank=True, null=True)
+#     desktop_status = models.IntegerField()
+#     desktop_is_sent = models.IntegerField()
+#     deleted = models.BigIntegerField()
+#     deleted_at = models.DateTimeField(blank=True, null=True)
+#     updated_at = models.DateTimeField(blank=True, null=True)
+#     created_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'yzy_voi_terminal_to_desktops'

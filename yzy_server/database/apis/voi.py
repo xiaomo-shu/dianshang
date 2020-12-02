@@ -66,11 +66,11 @@ def update_voi_terminal_desktop_info(values):
         model_query(YzyVoiTerminalToDesktops).filter_by(terminal_mac=values['terminal_mac']).update(update_data)
 
 
-def update_voi_terminal_desktop_bind(desktop_group_uuid, terminal_mac, ip_detail):
+def update_voi_terminal_desktop_bind(desktop_group_uuid, terminal_mac, info):
     update_data = {
         'updated_at': datetime.datetime.utcnow(),
     }
-    update_data.update(ip_detail)
+    update_data.update(info)
     model_query(YzyVoiTerminalToDesktops).filter_by(desktop_group_uuid=desktop_group_uuid,
                                                     terminal_mac=terminal_mac).update(update_data)
 

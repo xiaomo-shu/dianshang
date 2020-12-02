@@ -3,19 +3,22 @@ import traceback
 import json
 import threading
 import sys
-sys.path.append('/usr/local/yzy-kvm/')
-from yzy_terminal_agent.ext_libs.yzy_protocol import *
-from yzy_terminal_agent.agent_servers.voi_server.service_code import service_code_name, name_service_code
-from socket import socket, AF_INET, SOCK_STREAM
-s = socket(AF_INET, SOCK_STREAM)
-s.connect(('127.0.0.1', 50007))
+import random
 
+from multiprocessing import Process
+
+# sys.path.append('/usr/local/yzy-kvm/')
+from yzy_protocol import *
+from service_code import service_code_name, name_service_code
+from socket import socket, AF_INET, SOCK_STREAM
 
 class HeartBeatRequest(threading.Thread):
-    def __init__(self, mac, token):
+    def __init__(self, mac, token, socket, heart_data):
         threading.Thread.__init__(self)
+        self._socket = socket
         self.mac = mac
-        self.token = token 
+        self.token = token
+        self.heart_data = heart_data
         print("input mac: {}, token: {}".format(mac, token))
 
     def run(self):
@@ -23,14 +26,15 @@ class HeartBeatRequest(threading.Thread):
         while True:
             try:
                 service_name = "heartbeat"
-                ret_str = json.dumps(eval(service_name + "_data"))
+                # ret_str = json.dumps(eval(service_name + "_data"))
+                ret_str = json.dumps(self.heart_data)
                 service_code = name_service_code[service_name]
                 sequence_code = 2
                 #token = b"43210"
                 _size, msg = YzyProtocol().create_paket(service_code, ret_str.encode("utf-8"), self.token,
                                                         sequence_code=sequence_code, req_or_res=YzyProtocolType.REQ, client_type=ClientType.WINDOWS)
                 print("Send msg size: {}, msg: {}".format(_size, msg))
-                s.send(msg)
+                self._socket.send(msg)
 
                 time.sleep(10)
             except Exception as e:
@@ -40,16 +44,17 @@ class HeartBeatRequest(threading.Thread):
 
 
 class ServerRequestHandler(threading.Thread):
-    def __init__(self, mac, token):
+    def __init__(self, mac, token, socket):
         threading.Thread.__init__(self)
+        self._socket = socket
         self.mac = mac
-        self.token = token 
+        self.token = token
         print("input mac: {}, token: {}".format(mac, token))
 
     def run(self):
         print("Ready geting data from server .........................")
         while True:
-            msg = s.recv(24)
+            msg = self._socket.recv(24)
             if not msg:
                 continue
             paket_struct = YzyProtocol().parse_paket_header(msg)
@@ -63,11 +68,9 @@ class ServerRequestHandler(threading.Thread):
                         service_code_name[paket_struct.service_code],
                         paket_struct.sequence_code,
                     ))
-                       
-                         
-                    body = s.recv(body_length)
+                    body = self._socket.recv(body_length)
                     paket_struct.set_data(body)
-                    print("Get body: {}".format(body))
+                    print("Get token {} body: {}".format(token, body))
                     if body:
                         ret_data = paket_struct.data_json()
                         if service_code_name[paket_struct.service_code] == 'terminal_login' and paket_struct.token_length:
@@ -87,7 +90,7 @@ class ServerRequestHandler(threading.Thread):
                             "batch_no": ret_data['data']["batch_no"],
                             "terminal_id": confirm_id,
                         }
-                        request_order_confirm(input_data)
+                        request_order_confirm(input_data, self._socket)
                         print("send order_confirm: {}".format(input_data))
                 elif paket_struct.req_or_res == 1: # 1-request, 2-response
                     print("Get request: service_code[{}-{}], sequence_no[{}] 1111111111111111111111111111111111".format(
@@ -95,7 +98,7 @@ class ServerRequestHandler(threading.Thread):
                         service_code_name[paket_struct.service_code],
                         paket_struct.sequence_code,
                     ))
-                    body = s.recv(body_length)
+                    body = self._socket.recv(body_length)
                     if service_code_name[paket_struct.service_code] == 'send_torrent':
                         continue
                     paket_struct.set_data(body)
@@ -119,7 +122,7 @@ class ServerRequestHandler(threading.Thread):
                                                             req_or_res=YzyProtocolType.RESP,
                                                             client_type=ClientType.WINDOWS)
                     print("Send Response size: {}, msg: {}".format(_size, msg))
-                    s.send(msg)
+                    self._socket.send(msg)
                     ####### get order command 
                     if service_code_name[paket_struct.service_code] == 'order':
                         if ret_data["terminal_id"] == -1:
@@ -134,7 +137,7 @@ class ServerRequestHandler(threading.Thread):
                             "batch_no": ret_data["batch_no"],
                             "terminal_id": confirm_id,
                         }
-                        request_order_confirm(input_data)
+                        request_order_confirm(input_data, self._socket)
                         print("send order_confirm: {}".format(input_data))
 
                 else:
@@ -148,10 +151,11 @@ class ServerRequestHandler(threading.Thread):
 # msg = json.dumps(data).encode("utf-8")
 msg = b'\x01\x00\x00\x00\x01\x00\x00\x00\xb7\x15\x00\x00,\x00\x00\x00\x01\x00\x01\x01\x08\x00\x00\x0012345678{"mac": "11111-11111", "ip": "172.16.1.155"}'
 
-def request_service(service_name):
-    global token
+def request_service(_socket, service_name, token, req_data):
+    # global token
     t = time.time()
-    ret_str = json.dumps(eval(service_name + "_data"))
+    ret_str = json.dumps(getattr(req_data, service_name + "_data"))
+    # ret_str = json.dumps(eval(service_name + "_data"))
     print("send {} data: {}".format(service_name, ret_str))
     service_code = name_service_code[service_name]
     sequence_code = 2
@@ -159,10 +163,10 @@ def request_service(service_name):
     _size, msg = YzyProtocol().create_paket(service_code, ret_str.encode("utf-8"), token,
                                             sequence_code=sequence_code, req_or_res=YzyProtocolType.REQ, client_type=ClientType.WINDOWS)
     print("Send msg size: {}, msg: {}".format(_size, msg))
-    s.send(msg)
+    _socket.send(msg)
 
-def request_order_confirm(input_data):
-    global token
+def request_order_confirm(input_data, socket):
+    # global token
     t = time.time()
     ret_str = json.dumps(input_data)
     service_name = "order_confirm"
@@ -173,68 +177,89 @@ def request_order_confirm(input_data):
     _size, msg = YzyProtocol().create_paket(service_code, ret_str.encode("utf-8"), token,
                                             sequence_code=sequence_code, req_or_res=YzyProtocolType.REQ, client_type=ClientType.WINDOWS)
     print("Send msg size: {}, msg: {}".format(_size, msg))
-    s.send(msg)
+    socket.send(msg)
  
 mac = "22:22:22:22:22:22"
 token = b''
-heartbeat_data = {} 
-terminal_login_data = {}
-terminal_logout_data = {}
-get_date_time_data = {}
-get_config_version_id_data = {}
-update_config_info_data = {}
-get_config_info_data = {}
-verify_admin_user_data = {}
-order_query_data = {}
-order_confirm_data = {}
-p_to_v_start_data = {}
-p_to_v_state_data = {}
-get_desktop_group_list_data = {}
-diff_disk_download_data  = {}
-desktop_login_data = {}
-check_upload_state_data = {}
 
-def set_req_data(mac):
-    global heartbeat_data, terminal_login_data, terminal_logout_data, get_date_time_data, get_config_version_id_data, update_config_info_data, get_config_info_data 
-    global verify_admin_user_data, order_query_data, order_confirm_data, p_to_v_start_data, p_to_v_state_data, get_desktop_group_list_data, diff_disk_download_data 
-    global desktop_login_data, check_upload_state_data
+class ReqData:
+    heartbeat_data = {}
+    terminal_login_data = {}
+    terminal_logout_data = {}
+    get_date_time_data = {}
+    get_config_version_id_data = {}
+    update_config_info_data = {}
+    get_config_info_data = {}
+    verify_admin_user_data = {}
+    order_query_data = {}
+    order_confirm_data = {}
+    p_to_v_start_data = {}
+    p_to_v_state_data = {}
+    get_desktop_group_list_data = {}
+    diff_disk_download_data = {}
+    desktop_login_data = {}
+    check_upload_state_data = {}
+    put_desktop_group_list_data = {}
+    upload_desktop_notify_data = {}
 
-    heartbeat_data = {
+def set_req_data(mac, num, req_data):
+    # heartbeat_data = {}
+    # terminal_login_data = {}
+    # terminal_logout_data = {}
+    # get_date_time_data = {}
+    # get_config_version_id_data = {}
+    # update_config_info_data = {}
+    # get_config_info_data = {}
+    # verify_admin_user_data = {}
+    # order_query_data = {}
+    # order_confirm_data = {}
+    # p_to_v_start_data = {}
+    # p_to_v_state_data = {}
+    # get_desktop_group_list_data = {}
+    # diff_disk_download_data = {}
+    # desktop_login_data = {}
+    # check_upload_state_data = {}
+    # put_desktop_group_list_data = {}
+    # global heartbeat_data, terminal_login_data, terminal_logout_data, get_date_time_data, get_config_version_id_data, update_config_info_data, get_config_info_data
+    # global verify_admin_user_data, order_query_data, order_confirm_data, p_to_v_start_data, p_to_v_state_data, get_desktop_group_list_data, diff_disk_download_data
+    # global desktop_login_data, check_upload_state_data, put_desktop_group_list_data
+
+    req_data.heartbeat_data = {
         #"mac": "00:50:56:C0:00:08"
         "mac": mac
     }
     
-    terminal_login_data = {
+    req_data.terminal_login_data = {
         #"mac": "00:50:56:C0:00:08",
         "mac": mac,
         "ip" : "172.16.1.56"
     }
 
-    terminal_logout_data = {
+    req_data.terminal_logout_data = {
         #"mac": "00:50:56:C0:00:08",
         "mac": mac,
         "ip" : "172.16.1.56"
     }
 
 
-    get_date_time_data = {
+    req_data.get_date_time_data = {
         #"mac": "00:50:56:C0:00:08",
         "mac": mac
     }
 
-    get_config_version_id_data = {
+    req_data.get_config_version_id_data = {
         #"mac": "00:50:56:C0:00:08",
         "mac": mac
     }
 
-    get_config_info_data = {
+    req_data.get_config_info_data = {
         "mac": mac
     }
 
-    update_config_info_data = {
+    req_data.update_config_info_data = {
 		"terminal_id": 1,
 		"mac": mac,
-		"name": "zhouli",
+		"name": "test%s"% num,
 		"ip": "172.16.1.25",
 		"is_dhcp": 0,
 		"mask": "255.255.255.0",
@@ -256,27 +281,27 @@ def set_req_data(mac):
 		}
 	}
 
-    verify_admin_user_data = {
+    req_data.verify_admin_user_data = {
         "mac": mac,
 		"username": "admin",
 		"password": "123qwe,."
     }
 
-    order_query_data =  {
+    req_data.order_query_data =  {
         "mac": mac,
     }
 
-    order_confirm_data = {
+    req_data.order_confirm_data = {
         "mac": mac,
     }
 
-    upload_desktop_notify_data = {
+    req_data.upload_desktop_notify_data = {
         "mac": mac,
         "file_size": "2342334",
         "file_name": "file_name234234",
     }
 
-    p_to_v_start_data = {
+    req_data.p_to_v_start_data = {
         "mac": mac,
         "name": "ysr_template_6",
         "desc": "add qq soft",
@@ -293,7 +318,7 @@ def set_req_data(mac):
         ]
     }
 
-    p_to_v_state_data = {
+    req_data.p_to_v_state_data = {
         "mac": mac,
         "os_type": "windows_7_x64",  # "windows_10_x64" "windows_7" "windows_10" "other"
         "image_name": "voi_0_8cdd60cf-c394-453e-9645-8aade056c418",
@@ -303,19 +328,19 @@ def set_req_data(mac):
         "storage": "opt",
     }
 
-    get_desktop_group_list_data = {
+    req_data.get_desktop_group_list_data = {
         "mac": mac,
         "ip": "172.16.1.44",
     }
 
-    diff_disk_download_data = {
+    req_data.diff_disk_download_data = {
         "mac": mac,
 	"desktop_group_uuid": "a624cf70-814a-4f09-b6b6-eea38da3bf14",
 	"diff_disk_uuid": "2979f13d-1964-4667-bb9d-3336d7f6f6a8",
 	"diff_level": 1
     }
 
-    desktop_login_data = {
+    req_data.desktop_login_data = {
         "mac": mac,
     	"desktop_group_uuid": "4d549232-0e35-4faa-9f01-36c51e7330c1",
     	"is_dhcp": 1,
@@ -326,47 +351,72 @@ def set_req_data(mac):
     	"dns2": "8.8.8.8"
     }
 
-    check_upload_state_data = {
+    req_data.check_upload_state_data = {
         "mac": mac,
     	"desktop_group_uuid": "4d549232-0e35-4faa-9f01-36c51e7330c1"
     }
 
-if __name__ == '__main__':
-    # serv = TCPServer(('', 20000), EchoHandler)
-    # serv.serve_forever()
-    mac = sys.argv[1]
-    os.chdir('/usr/local/yzy-kvm/yzy_terminal_agent/')
-    set_req_data(mac)
-    print("terminal_login_data: {},  terminal_logout_data: {}, get_date_time_data: {}".format(terminal_login_data, terminal_logout_data, get_date_time_data))
+    req_data.put_desktop_group_list_data = {
+        "mac": mac,
+    	"sys_disk_uuids": "4d549232-0e35-4faa-9f01-36c51e7330c1,222222222222222222"
+    }
+
+    # return
+
+
+def client(server_ip, mac, num):
+    # global token
+    token = b""
+    s = socket(AF_INET, SOCK_STREAM)
+    s.connect((server_ip, 50007))
+    # os.chdir('/usr/local/yzy-kvm/yzy_terminal_agent/')
+    req_data = ReqData()
+    set_req_data(mac, num, req_data)
+    # print("terminal_login_data: {},  terminal_logout_data: {}, get_date_time_data: {}".format(terminal_login_data,
+    #                                                                                           terminal_logout_data,
+    #                                                                                           get_date_time_data))
     # terminal_login()
     # terminal_logout()
     # get_date_time()
 
-    request_service("terminal_login")
-    #t = threading.Thread(target=ServerRequestHandler.run, args=(mac, token))
-    #t.start()
-    server_response_handler = ServerRequestHandler(mac, token)
+    request_service(s, "terminal_login", token, req_data)
+    # t = threading.Thread(target=ServerRequestHandler.run, args=(mac, token))
+    # t.start()
+    server_response_handler = ServerRequestHandler(mac, token, s)
     server_response_handler.start()
-    time.sleep(10)
+    time.sleep(random.randint(5,10))
     token = server_response_handler.token
     print('get server token: {}'.format(token))
-    request_service("get_date_time")
-    request_service("get_config_version_id")
-    request_service("update_config_info")
-    request_service("get_config_info")
-    request_service("verify_admin_user")
-    request_service("order_query")
-    request_service("p_to_v_start")
-    time.sleep(10)
-    request_service("p_to_v_state")
-    request_service("get_desktop_group_list")
-    request_service("diff_disk_download")
-    request_service("desktop_login")
-    request_service("check_upload_state")
-    #t = threading.Thread(target=HeartBeatRequest.run, args=(mac, token))
-    #t.start()
-    heartbeat_handler = HeartBeatRequest(mac, token)
+    request_service(s, "get_date_time", token, req_data)
+    request_service(s, "get_config_version_id", token, req_data)
+    request_service(s, "update_config_info", token, req_data)
+    request_service(s, "get_config_info", token, req_data)
+    request_service(s, "verify_admin_user", token, req_data)
+    request_service(s, "order_query", token, req_data)
+    request_service(s, "p_to_v_start", token, req_data)
+    time.sleep(random.randint(5,10))
+    request_service(s, "p_to_v_state", token, req_data)
+    request_service(s, "get_desktop_group_list", token, req_data)
+    request_service(s, "diff_disk_download", token, req_data)
+    request_service(s, "desktop_login", token, req_data)
+    request_service(s, "check_upload_state", token, req_data)
+    request_service(s, "put_desktop_group_list", token, req_data)
+    # t = threading.Thread(target=HeartBeatRequest.run, args=(mac, token))
+    # t.start()
+    heartbeat_handler = HeartBeatRequest(mac, token, s, req_data.heartbeat_data)
     heartbeat_handler.start()
+
+
+
+if __name__ == '__main__':
+    # serv = TCPServer(('', 20000), EchoHandler)
+    # serv.serve_forever()
+    server_ip = sys.argv[1]
+    num = sys.argv[2]
+    for i in range(int(num)):
+        mac = "F4:4D:30:70:4C%04d" % int(i)
+        p = Process(target=client, args=(server_ip, mac, i))  # p=Process(target=task,kwargs={'name':'egon'})
+        p.start()
 
     while True:
         #break

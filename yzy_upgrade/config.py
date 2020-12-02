@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import multiprocessing
 import os
+from dynaconf import LazySettings
 from common.utils import _ConfigParser
 from common import constants
 
 basedir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+settings = LazySettings(ROOT_PATH_FOR_DYNACONF=constants.BASE_DIR)
 
 
 class BaseConfig:
@@ -18,11 +20,16 @@ class BaseConfig:
     SECRET_KEY = os.getenv('SECRET_KEY', 'a secret string')
 
     # 数据库配置
-    DATABASE_HOST = '127.0.0.1'
-    DATABASE_PORT = 3306
-    DATABASE_USER = 'root'
-    DATABASE_PASSWORD = '123qwe,.'
-    DATABASE_NAME = 'yzy_kvm_db'
+    DATABASE_HOST = settings.get('HOST', '127.0.0.1')
+    DATABASE_PORT = settings.get('PORT', 3306)
+    DATABASE_USER = settings.get('USER', 'root')
+    DATABASE_PASSWORD = settings.get('PASSWORD', '123qwe,.')
+    DATABASE_NAME = settings.get('NAME', 'yzy_kvm_db')
+    # DATABASE_HOST = '127.0.0.1'
+    # DATABASE_PORT = 3306
+    # DATABASE_USER = 'root'
+    # DATABASE_PASSWORD = '123qwe,.'
+    # DATABASE_NAME = 'yzy_kvm_db'
     SQLALCHEMY_DATABASE_URI = "mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db_name}?charset=utf8" \
         .format(**{"user": DATABASE_USER, "password": DATABASE_PASSWORD, "host": DATABASE_HOST,
                    "port": DATABASE_PORT, "db_name": DATABASE_NAME})

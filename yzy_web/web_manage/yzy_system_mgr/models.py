@@ -61,7 +61,7 @@ class YzyCrontabDetail(SoftDeletableModel):
     hour = models.IntegerField()
     minute = models.IntegerField()
     cycle = models.CharField(max_length=32)
-    values = models.CharField(max_length=32)
+    values = models.TextField(max_length=32)
     func = models.CharField(max_length=255)
     params = models.TextField()
     updated_at = models.DateTimeField(blank=True, null=True)
@@ -69,6 +69,18 @@ class YzyCrontabDetail(SoftDeletableModel):
 
     class Meta:
         db_table = 'yzy_crontab_detail'
+        ordering = ['id']
+
+
+class YzyAuth(SoftDeletableModel):
+    sn = models.CharField(max_length=64)
+    organization = models.CharField(max_length=255, null=True, default='')
+    remark = models.CharField(max_length=255, null=True, default='')
+    updated_at = models.DateTimeField(blank=True, null=True, auto_now=True)
+    created_at = models.DateTimeField(blank=True, auto_now_add=True)
+
+    class Meta:
+        db_table = 'yzy_auth'
         ordering = ['id']
 
 
@@ -96,3 +108,17 @@ class YzyWarnSetup(SoftDeletableModel):
 
     class Meta:
         db_table = 'yzy_warn_setup'
+
+
+class YzyTask(SoftDeletableModel):
+    uuid = models.CharField(max_length=64)
+    task_uuid = models.CharField(max_length=64)
+    name = models.CharField(max_length=64)
+    status = models.CharField(max_length=20)
+    type = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(blank=True, auto_now_add=True)
+
+    class Meta:
+        db_table = 'yzy_task'
+        ordering = ['-created_at']

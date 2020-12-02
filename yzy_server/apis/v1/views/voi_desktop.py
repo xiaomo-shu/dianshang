@@ -53,6 +53,9 @@ class VoiEducationDesktopAPI(MethodView):
                     "data_restore": 1,
                     "prefix": "pc",
                     "show_info": 1,
+                    "diff_mode": 0,
+                    "sys_reserve_size": 0,
+                    "data_reserve_size": 10,
                     "auto_update": 1,
                     "use_bottom_ip": True,
                     "ip_detail": {

@@ -289,12 +289,33 @@ class TerminalManager(object):
                 mac = terminal["mac"]
                 if mac not in mac_list:
                     mac_list.append(mac)
-            terminal_objs = self.get_all_object(YzyTerminal, {"mac": mac_list})
+            terminal_objs = self.get_all_object(YzyTerminal, {"mac": mac_list}).order_by("-terminal_id")
             screen_info_list = list()
+            current_screen_list = []
             server_ip = ""
+            top_level_service_ip = None
+            teacher_service_ip = None
+            classroom_num = None
+            multicast_ip = None
+            multicast_port = None
+            hide_tools = None
             try:
                 for terminal in terminal_objs:
                     setup_info = json.loads(terminal.setup_info)
+                    if setup_info.get('program') and hide_tools is None:
+                        hide_tools = setup_info['program']['hide_tools']
+                    if setup_info.get('teaching'):
+                        if setup_info.get('teaching').get('top_level_service_ip') and top_level_service_ip is None:
+                            top_level_service_ip = setup_info['teaching']['top_level_service_ip']
+                        if setup_info.get('teaching').get('teacher_service_ip') and teacher_service_ip is None:
+                            teacher_service_ip = setup_info['teaching']['teacher_service_ip']
+                        if setup_info.get('teaching').get('classroom_num') and classroom_num is None:
+                            classroom_num = setup_info['teaching']['classroom_num']
+                        if setup_info.get('teaching').get('multicast_ip') and multicast_ip is None:
+                            multicast_ip = setup_info['teaching']['multicast_ip']
+                        if setup_info.get('teaching').get('multicast_port') and multicast_port is None:
+                            multicast_port = setup_info['teaching']['multicast_port']
+                    current_screen_list.append(setup_info['program']['current_screen_info'])
                     sceen_info = setup_info["program"]["screen_info_list"]
                     server_ip = setup_info["program"]["server_ip"]
                     for i in sceen_info.split(","):
@@ -304,10 +325,23 @@ class TerminalManager(object):
                 logger.error("", exc_info=True)
                 return get_error_result("TerminalSetupInfoError")
 
+            current_screen_dict = {current_screen_list.count(current_screen): current_screen
+                                   for current_screen in current_screen_list}
+            current_screen_info = current_screen_dict[max(current_screen_dict.keys())]
+            current_screen_info = "%s*%s" %(current_screen_info['width'], current_screen_info['height'])
             data = {
                 "program": {
+                    "current_screen_info": current_screen_info,
                     "screen_info_list": screen_info_list,
                     "server_ip": server_ip,
+                    "hide_tools": hide_tools,
+                },
+                "teaching": {
+                    "top_level_service_ip": top_level_service_ip,
+                    "teacher_service_ip": teacher_service_ip,
+                    "classroom_num": classroom_num,
+                    "multicast_ip": multicast_ip,
+                    "multicast_port": multicast_port
                 }
             }
             ret = get_error_result("Success", data)
@@ -479,7 +513,22 @@ class TerminalManager(object):
         """ 按序重排ip
         """
         terminals = data.get("terminals",[])
+
+        modify_ip_method = data.get("modify_ip_method")
         group_uuid = data.get("group_uuid", "")
+        if modify_ip_method == "dhcp":
+            req_data = {
+                "handler": "WebTerminalHandler",
+                "command": "modify_ip",
+                "data": {
+                    "group_uuid": group_uuid,
+                    "modify_ip_method": modify_ip_method,
+                }
+            }
+            logger.debug("Use dhcp to modify group's %s terminals" % group_uuid)
+            ret = terminal_post("/api/v1/terminal/task", req_data)
+            return ret
+
         start_ip = data.get("start_ip")
         netmask = data.get("netmask")
         gateway = data.get("gateway")
@@ -518,6 +567,7 @@ class TerminalManager(object):
         terminals = self.get_all_object(YzyTerminal, {"group_uuid": group_uuid}).order_by("terminal_id")
         name_list = list()
         mac_list = list()
+        ips = list()
         for terminal in terminals:
             mac = terminal.mac
             name = terminal.name
@@ -525,16 +575,17 @@ class TerminalManager(object):
                 mac_list.append(mac)
             if name not in name_list:
                 name_list.append(name)
+            ips.append(ip_resources[terminal.terminal_id - 1].exploded)
 
-        start_num = int(start_ip.split(".")[-1])
-        end_num = start_num + len(terminals) - 1
-        if end_num > 254:
-            logger.error("terminal modify sort ip error")
-            return get_error_result("TerminalSortIpError")
-        _ip = start_ip.split(".")
-        _ip[-1] = str(end_num)
-        end_ip = ".".join(_ip)
-        ips = find_ips(start_ip, end_ip)
+        # start_num = int(start_ip.split(".")[-1])
+        # end_num = start_num + max(max_num) - 1
+        # if end_num > 254:
+        #     logger.error("terminal modify sort ip error")
+        #     return get_error_result("TerminalSortIpError")
+        # _ip = start_ip.split(".")
+        # _ip[-1] = str(end_num)
+        # end_ip = ".".join(_ip)
+        # ips = find_ips(start_ip, end_ip)
         ips_str = ",".join(ips)
         mac_list_str = ",".join(mac_list)
         req_data = {

@@ -246,6 +246,32 @@ class WebTerminalHandlerProcess(BaseProcess):
             cmd_msg = CommandMsg()
             cmd_msg.cmdstr = 'update_ip'
             cmd_msg.BodyType = CommandBodyType.TEXT
+
+            # Use dhcp config
+            modify_ip_method = self.task.get("data").get("modify_ip_method")
+            if modify_ip_method == "dhcp":
+                group_uuid = self.task.get("data").get('group_uuid')
+                table_api = db_api.YzyTerminalTableCtrl(current_app.db)
+                terminals = table_api.select_terminal_by_group_uuid(group_uuid)
+                ip_info = {
+                    "IsDhcp": 1,
+                }
+                for term in terminals:
+                    values = {
+                        'mac': term.mac,
+                        'conf_version': str(int(term.conf_version) + 1),
+                        'is_dhcp': 1
+                    }
+                    table_api.update_terminal_by_mac(**values)
+                    if term.status == "1":
+                        ip_info["Mac"] = term.mac
+                        body = str(json.dumps(ip_info).encode('utf-8'), encoding='utf-8')
+                        cmd_msg.Body = "Command:{}|{}".format(cmd_msg.cmdstr, body)
+                        logging.debug(cmd_msg)
+                        self.send_thrift_cmd(mac, cmd_msg)
+                logging.debug("Modify group's %s terminals to dhcp success." % group_uuid)
+                return resp
+
             mac_list = self.task.get("data").get("mac_list").split(',')
             ip_list = self.task.get("data").get("to_ip_list").split(',')
             gateway = self.task.get("data").get("gateway")
@@ -322,6 +348,12 @@ class WebTerminalHandlerProcess(BaseProcess):
             goto_local_auth = self.task.get("data").get("windows").get("disconnect_setup").get("goto_local_auth")
             show_local_button = self.task.get("data").get("windows").get("show").get("show_local_button")
             goto_local_passwd = self.task.get("data").get("windows").get("show").get("goto_local_passwd")
+            hide_tools = self.task.get("data").get("program").get("hide_tools")
+            top_level_service_ip = self.task.get("data").get("teaching").get("top_level_service_ip")
+            teacher_service_ip = self.task.get("data").get("teaching").get("teacher_service_ip")
+            classroom_num = self.task.get("data").get("teaching").get("classroom_num")
+            multicast_ip = self.task.get("data").get("teaching").get("multicast_ip")
+            multicast_port = self.task.get("data").get("teaching").get("multicast_port")
 
             set_mode_info = {
                 'show_desktop_type': show_desktop_type,
@@ -341,6 +373,13 @@ class WebTerminalHandlerProcess(BaseProcess):
                     'goto_local_passwd': goto_local_passwd
                 }
             }
+            set_teaching_info = {
+                'top_level_service_ip': top_level_service_ip,
+                'teacher_service_ip': teacher_service_ip,
+                'classroom_num': classroom_num,
+                'multicast_ip': multicast_ip,
+                'multicast_port': multicast_port
+            }
             # yzy_terminal update setup_conf
             for mac in mac_list:
                 table_api = db_api.YzyTerminalTableCtrl(current_app.db)
@@ -354,6 +393,7 @@ class WebTerminalHandlerProcess(BaseProcess):
                         'server_port': 9999,
                         'show_modify_user_passwd': show_modify_user_passwd,
                         'terminal_setup_passwd': terminal_setup_passwd,
+                        'hide_tools': hide_tools,
                         'current_screen_info': {
                             'width': int(current_screen_info.split('*')[0]),
                             'height': int(current_screen_info.split('*')[1])
@@ -362,6 +402,7 @@ class WebTerminalHandlerProcess(BaseProcess):
                     }
                     setup_info['program'] = set_program_info
                     setup_info['windows'] = set_windows_info
+                    setup_info['teaching'] = set_teaching_info
                     terminal_values = {
                         'mac': qry_terminal.mac,
                         'conf_version': str(int(qry_terminal.conf_version) + 1),

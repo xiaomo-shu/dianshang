@@ -23,14 +23,21 @@ logger = logging.getLogger(__name__)
 from yzy_terminal_agent.database import api as db_api
 from yzy_terminal_agent.ext_libs.bt_api_service import BtApiServiceTask
 def get_controller_image_ip():
-    table_api = db_api.YzyNetworkIpCtrl(db)
-    qry = table_api.select_controller_image_ip()
-    if qry and qry.ip:
-        logger.debug("select controller node image_ip: {}".format(qry.ip))
-        return qry.ip
+    # 如果启用了HA，则使用浮动IP作为写入BT种子文件的IP
+    table_api = db_api.YzyHaInfoTableCtrl(db)
+    ha_info_obj = table_api.get_ha_info_first()
+    if ha_info_obj:
+        logger.debug("use HA vip as controller_image_ip: {}".format(ha_info_obj.vip))
+        return ha_info_obj.vip
     else:
-        logger.error("search controller node image_ip error")
-        raise Exception("search controller node image_ip error")
+        table_api = db_api.YzyNetworkIpCtrl(db)
+        qry = table_api.select_controller_image_ip()
+        if qry and qry.ip:
+            logger.debug("select controller node image_ip: {}".format(qry.ip))
+            return qry.ip
+        else:
+            logger.error("search controller node image_ip error")
+            raise Exception("search controller node image_ip error")
 
 def init_bt():
     try:

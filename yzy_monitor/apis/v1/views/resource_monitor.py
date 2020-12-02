@@ -162,11 +162,14 @@ def get_memory_info():
         return resp
 
 
-## return 1-ssd 2-sata
+## return 0-ssd 1-sata
 def checkSsd(device):
     device_name = device.split('/')[-1]
-    rota = os.popen('lsblk -o name,rota|grep {}'.format(device_name)).readline().split()[-1]
-    return int(rota)
+    rota = os.popen('lsblk -o name,rota|grep {}'.format(device_name)).readline().split()
+    if rota:
+        rota = rota[-1]
+        return int(rota)
+    return 0
 
 
 @api_v1.route('/monitor/disk', methods=['GET', 'POST'])
@@ -251,7 +254,8 @@ def get_network_info():
             # nic_speed = 0
             try:
                 ret = os.popen('ethtool %s|grep "baseT"' % nic_name).readlines()[-1]
-                speed = re.sub("\D", "", ret)
+                # 存在最后一行有两个数据的情况， "1000baseT/Half 1000baseT/Full"
+                speed = re.sub("\D", "", ret.split()[-1])
                 if speed:
                     nic_speed = int(speed)
             except Exception as err:
@@ -263,7 +267,7 @@ def get_network_info():
                 nic_stat = bool(int(open('/sys/class/net/{}/carrier'.format(nic_name), 'r').readline()[0]))
                 nic_conf_lines = os.popen('egrep -v \'^$|#\' /etc/sysconfig/network-scripts/ifcfg-{}'
                                           .format(nic_name)).readlines()
-                nic_conf = {element.split('=')[0]: element.split('=')[1][:-1]  for element in nic_conf_lines}
+                nic_conf = {element.split('=')[0]: element.split('=')[1][:-1] for element in nic_conf_lines}
 
             except Exception as err:
                 current_app.logger.error(err)
@@ -371,7 +375,8 @@ def get_hardware_info():
         hardware_type_list = ['cpu', 'memory']
         info = get_profile()
         resp['data']['cpu'] = dict(Counter(get_device_info(info, "cpu")))
-        resp['data']['memory'] = dict(Counter(get_device_info(info, "memory")))
+        # resp['data']['memory'] = dict(Counter(get_device_info(info, "memory")))
+        resp['data']['memory'] = get_device_info(info, "memory")
         return resp
     except Exception as err:
         current_app.logger.error(err)
@@ -713,6 +718,7 @@ def verify_password():
 @timefn
 def resource_statis():
     resp = errcode.get_error_result()
+    resp['data'] = {}
     data = request.get_json()
     node_name = data.get("node_name", "")
     node_uuid = data.get("node_uuid", "")
@@ -891,6 +897,36 @@ def resource_perf_for_database():
         current_app.logger.error(err)
         current_app.logger.error(''.join(traceback.format_exc()))
         resp = errcode.get_error_result(error="SystemError")
+        return resp
+
+
+@api_v1.route('/monitor/get_time', methods=['POST'])
+@timefn
+def system_run_time():
+    current_app.logger.debug("get system running time")
+    resp = errcode.get_error_result()
+    resp['data'] = {}
+    try:
+        start_time = time.localtime(psutil.boot_time())
+        _time = time.strftime("%Y-%m-%d %H:%M:%S", start_time)
+        date_time = dt.datetime.fromisoformat(_time)
+        days = (dt.datetime.now() - date_time).days
+        delta_seconds = (dt.datetime.now() - date_time).seconds
+        hours = delta_seconds // (60 * 60)
+        minutes = (delta_seconds - hours * (60 * 60)) // 60
+        run_time = ""
+        if days:
+            run_time += "%s天" % days
+        if hours:
+            run_time += "%s时" % hours
+        run_time += "%s分" % minutes
+        # run_time = "%s天%s时%s分" % (days, hours, minutes)
+        resp['data']['run_time'] = run_time
+        return resp
+    except Exception as err:
+        current_app.logger.error(err)
+        current_app.logger.error(''.join(traceback.format_exc()))
+        resp = errcode.get_error_result(error="GetSystemRunningTimeError")
         return resp
 
 

@@ -1,4 +1,5 @@
 import logging
+from threading import  Thread
 from web_manage.common.http import server_post
 from web_manage.common.log import operation_record
 logger = logging.getLogger(__name__)
@@ -27,5 +28,11 @@ class DatabaseBackManager(object):
         logger.info("begin backup database")
         ret = server_post("/api/v1/system/database/backup", {})
         logger.info("backup database end")
+
+        if ret.get("data", {}).get("path", None):
+            # 如果启用了HA，把数据库备份文件同步给备控，未启用则不同步
+            task = Thread(target=server_post, args=('/controller/ha_sync_web_post', {"paths": [ret["data"]["path"]]},))
+            task.start()
+
         return ret
 
