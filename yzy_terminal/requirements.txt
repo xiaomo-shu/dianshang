@@ -24,7 +24,7 @@ Mako==1.1.0
 MarkupSafe==1.1.1
 mysql-connector-python==8.0.18
 netaddr==0.7.19
-protobuf==3.11.1
+protobuf==3.15.0
 pycparser==2.19
 pyrsistent==0.15.7
 python-box==3.4.6
