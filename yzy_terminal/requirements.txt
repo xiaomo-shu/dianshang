@@ -20,7 +20,7 @@ ipcqueue==0.9.6
 itsdangerous==1.1.0
 Jinja2==2.10.3
 jsonschema==3.2.0
-Mako==1.1.0
+Mako==1.2.2
 MarkupSafe==1.1.1
 mysql-connector-python==8.0.18
 netaddr==0.7.19
